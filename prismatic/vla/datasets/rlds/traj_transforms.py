@@ -70,14 +70,12 @@ def chunk_act_obs(
     traj["action_valid_mask"] = action_valid_mask
 
     if pair_target_offset > 0:
-        pair_indices = tf.broadcast_to(
-            tf.constant([0, pair_target_offset], dtype=tf.int32),
-            [effective_traj_len, 2],
-        ) + tf.broadcast_to(
-            tf.range(effective_traj_len, dtype=tf.int32)[:, None],
-            [effective_traj_len, 2],
-        )
-        floored_pair_indices = tf.minimum(tf.maximum(pair_indices, 0), traj_len - 1)
+        # Build one [current, future] pair for every observation in the
+        # temporal window.  The old implementation created only one pair per
+        # sample, which is insufficient for temporal TTT batches.
+        current_indices = floored_chunk_indices
+        future_indices = tf.minimum(current_indices + pair_target_offset, traj_len - 1)
+        floored_pair_indices = tf.stack((current_indices, future_indices), axis=-1)
         for key, value in old_obs.items():
             if key.startswith("image_") and not key.startswith("depth_"):
                 traj["observation"][f"pair_{key}"] = tf.gather(value, floored_pair_indices)

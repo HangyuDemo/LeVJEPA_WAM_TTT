@@ -32,6 +32,22 @@ from torch.func import functional_call, grad, vmap
 TTTFastWeightState = namedtuple("TTTFastWeightState", ("fast_weights", "step"))
 
 
+class CompatRMSNorm(nn.Module):
+    """RMSNorm fallback for PyTorch versions before ``nn.RMSNorm``."""
+
+    def __init__(self, dim: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.float()
+        variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
+        normalized = hidden_states * torch.rsqrt(variance + self.eps)
+        return (normalized * self.weight.float()).to(dtype=input_dtype)
+
+
 def _add_parameter_trees(left, right):
     if left is None:
         return right
@@ -76,26 +92,24 @@ class TemporalTTTLayer(nn.Module):
         self.rope_theta = rope_theta
         # Keep the original QKV projection for the DiT query path.  Keys and
         # values are supplied separately by the WAM prediction head below.
-        self.to_qkv = nn.Sequential(nn.RMSNorm(dim), nn.Linear(dim, 3 * dim))
+        self.to_qkv = nn.Sequential(CompatRMSNorm(dim), nn.Linear(dim, 3 * dim))
         self.query_to_memory = nn.Linear(dim, self.memory_dim)
-        self.memory_norm = nn.RMSNorm(self.memory_dim)
+        self.memory_norm = CompatRMSNorm(self.memory_dim)
         self.memory = nn.Sequential(
             nn.Linear(self.memory_dim, memory_hidden_dim),
             nn.GELU(),
             nn.Linear(memory_hidden_dim, self.memory_dim),
         )
         self.memory_to_output = nn.Linear(self.memory_dim, dim)
-        # RoboTTT learns a multiplier on top of its 0.1 inner-loop base rate.
-        # softplus(0.54132485) == 1, so the initial effective rate is 0.1.
-        self.inner_lr_base = 0.1
-        self.learnable_lr = nn.Parameter(torch.tensor(0.54132485))
-        # The paper initializes this residual gate near 0.001 so the pretrained
-        # DiT behavior is preserved while TTT is learned.
-        self.memory_out_layerscale = nn.Parameter(torch.full((dim,), 1e-3))
+        # Match robo_ttt's default inner-loop scale: the effective initial rate
+        # is softplus(1e-2), rather than an extra fixed multiplier.
+        self.learnable_lr = nn.Parameter(torch.tensor(1e-2))
+        # Match TTTWrapper's small random residual gate initialization.
+        self.memory_out_layerscale = nn.Parameter(torch.randn(dim) * 1e-4)
         self.learned_forget = learned_forget
         if learned_forget:
             self.to_forget_gate = nn.Sequential(
-                nn.RMSNorm(dim),
+                CompatRMSNorm(dim),
                 nn.Linear(dim, 2 * dim),
                 nn.SiLU(),
                 nn.Linear(2 * dim, 1),
@@ -203,7 +217,7 @@ class TemporalTTTLayer(nn.Module):
         next_state = state
         if update_memory:
             grads = self._memory_grads(memory_params, k, v)
-            learning_rate = self.inner_lr_base * F.softplus(self.learnable_lr)
+            learning_rate = F.softplus(self.learnable_lr)
 
             if self.learned_forget:
                 forget = self.to_forget_gate(tokens.mean(dim=1)).squeeze(-1)

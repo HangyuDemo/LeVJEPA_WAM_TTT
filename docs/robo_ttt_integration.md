@@ -6,11 +6,12 @@ the released single-frame action head.
 
 ## Placement
 
-`TemporalTTTLayer` is placed in each selected Flow-DiT block after the
-attention residual and before the feed-forward network:
+`TemporalTTTLayer` is placed on the action-token sequence immediately before
+the Flow-DiT policy transformer, matching RoboTTT's wrapper around an action
+token projection:
 
 ```text
-attention -> residual add -> TemporalTTTLayer -> FFN -> residual add
+action encoder -> TemporalTTTLayer -> Flow-DiT transformer
 ```
 
 V-JEPA, the visual projector, and Qwen are not changed.  Each cross-attention
@@ -20,8 +21,7 @@ two inputs: the DiT sequence used for queries and the WAM prediction used for
 memory writes:
 
 ```text
-cross-attention: action tokens -> [Qwen visual tokens, action-placeholder tokens]
-query:           [proprio] [register tokens] [existing learned future tokens] [noisy action tokens]
+query:           noisy action-token features
 memory:          WAM(visual Qwen tokens) -> predicted V-JEPA representation (Ŷ)
 ```
 
@@ -35,12 +35,11 @@ future information).
 
 ## Training
 
-Set all of the following in `VLAConfig`:
+Set the following in `VLAConfig`:
 
 ```python
 ttt_enabled = True
 ttt_context_length = 16
-ttt_layer_indices = ()  # empty means every Flow-DiT block
 ttt_tbptt_step_size = 8
 ```
 
@@ -63,6 +62,6 @@ actions, fast_weights = action_head.predict_action(
 )
 ```
 
-The first Euler flow step writes the memory once; remaining denoising steps
-read the resulting state without writing the same observation repeatedly.
-Discard `fast_weights` at an episode reset.
+Every Flow-Matching denoising forward updates the current fast-weight state,
+matching the original RoboTTT wrapper behavior. Discard `fast_weights` at an
+episode reset.

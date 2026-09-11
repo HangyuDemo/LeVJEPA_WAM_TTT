@@ -38,7 +38,14 @@ def _frame_to_pil(frame: Any) -> Image.Image:
     if isinstance(frame, (bytes, bytearray, np.bytes_)):
         return Image.open(BytesIO(frame)).convert("RGB")
     if isinstance(frame, np.ndarray):
-        return Image.fromarray(frame).convert("RGB")
+        # RLDS chunking adds singleton window axes before the image channels.
+        # Remove those axes so PIL receives the expected [H, W, C] image.
+        array = frame
+        while array.ndim > 3 and array.shape[0] == 1:
+            array = array[0]
+        if array.ndim != 3:
+            raise ValueError(f"Expected image with shape [H, W, C], got {array.shape}")
+        return Image.fromarray(array).convert("RGB")
     raise ValueError(f"Unsupported frame type `{type(frame)}`")
 
 
@@ -135,7 +142,7 @@ class VLABatchTransform:
                 raise ValueError("Paired primary frames are required for visual-token cosine supervision.")
             if context == 1:
                 output["pair_pixel_values"] = _transform_sequence(
-                    self.image_transform, observation["pair_image_primary"]
+                    self.image_transform, observation["pair_image_primary"][0]
                 )
             else:
                 output["pair_pixel_values"] = _stack_pixel_values(
@@ -147,7 +154,7 @@ class VLABatchTransform:
                 raise ValueError("Paired wrist frames are required for visual-token cosine supervision.")
             if context == 1:
                 output["pair_pixel_values_wrist"] = _stack_pixel_values(
-                    [_transform_sequence(self.image_transform, observation[key]) for key in pair_wrist_keys]
+                    [_transform_sequence(self.image_transform, observation[key][0]) for key in pair_wrist_keys]
                 )
             else:
                 output["pair_pixel_values_wrist"] = _stack_pixel_values(

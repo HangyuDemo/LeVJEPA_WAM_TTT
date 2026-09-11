@@ -8,7 +8,7 @@ from torch.distributions import Beta
 from transformers import PretrainedConfig
 
 from prismatic.models.flow_matching_head.action_encoder import ActionEncoder
-from prismatic.models.flow_matching_head.cross_attention_dit import DiT
+from prismatic.models.flow_matching_head.cross_attention_dit import DiT, TemporalTTTLayer
 
 
 class MLP(nn.Module):
@@ -87,9 +87,9 @@ class FlowMatchingActionHead(nn.Module):
 
         action_model_cfg = {"input_embedding_dim": 1536, "attention_head_dim": 48, "num_attention_heads": 32}
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
-        # ``None`` and an empty tuple both mean "all DiT layers" when TTT is
-        # enabled.  Keeping that convention at this public constructor avoids
-        # a surprising difference from VLAConfig.
+        # RoboTTT wraps the action-token projection before the policy
+        # transformer.  The JEPA-WAM variant keeps that placement and uses the
+        # WAM-predicted V-JEPA representation as external memory.
         resolved_ttt_layer_indices = tuple(ttt_layer_indices) if ttt_layer_indices else None
         diffusion_model_cfg = {
             **action_model_cfg,
@@ -101,11 +101,10 @@ class FlowMatchingActionHead(nn.Module):
             "num_layers": fm_num_layers,
             "output_dim": fm_hidden_size,
             "positional_embeddings": None,
-            "ttt_enabled": ttt_enabled,
-            "ttt_layer_indices": resolved_ttt_layer_indices,
-            "ttt_memory_hidden_dim": ttt_memory_hidden_dim,
-            "ttt_memory_dim": ttt_memory_dim,
-            "ttt_tbptt_step_size": ttt_tbptt_step_size,
+            # TTT is applied to action_features below, not inside every DiT
+            # block.  Keep the DiT architecture identical to JEPA-WAM.
+            "ttt_enabled": False,
+            "ttt_layer_indices": None,
         }
 
         config = FlowMatchingActionHeadConfig(
@@ -150,6 +149,17 @@ class FlowMatchingActionHead(nn.Module):
             action_dim=config.action_dim,
             hidden_size=self.input_embedding_dim,
         )
+        self.ttt_layer = None
+        if self.ttt_enabled:
+            memory_dim = ttt_memory_dim or self.input_embedding_dim
+            memory_hidden_dim = ttt_memory_hidden_dim or (2 * memory_dim)
+            self.ttt_layer = TemporalTTTLayer(
+                dim=self.input_embedding_dim,
+                memory_hidden_dim=memory_hidden_dim,
+                memory_dim=memory_dim,
+                require_memory_tokens=True,
+                learned_forget=True,
+            )
         self.action_decoder = MLP(
             input_dim=self.hidden_size,
             hidden_dim=self.hidden_size,
@@ -252,6 +262,21 @@ class FlowMatchingActionHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
+        # Equivalent to RoboTTT's wrapper around `to_action_tokens`: update
+        # and retrieve from one action-token TTT module before DiT attention.
+        next_fast_weights = prev_fast_weights
+        if self.ttt_layer is not None:
+            ttt_residual, next_fast_weights = self.ttt_layer(
+                action_features,
+                memory_tokens=flat_memory_tokens,
+                time_steps=time_steps,
+                prev_fast_weights=prev_fast_weights,
+                update_memory=update_fast_weights,
+                time_valid_mask=time_valid_mask,
+                tbptt_step_size=self.ttt_tbptt_step_size,
+            )
+            action_features = action_features + ttt_residual
+
         future_tokens = self.future_tokens.weight.unsqueeze(0).expand(flat_vl_embs.shape[0], -1, -1)
         token_groups = [state_features]
         if self.register_tokens is not None:
@@ -264,18 +289,8 @@ class FlowMatchingActionHead(nn.Module):
             encoder_hidden_states=flat_vl_embs,
             timestep=flat_timesteps,
             return_all_hidden_states=False,
-            time_steps=time_steps,
-            ttt_memory_tokens=flat_memory_tokens,
-            prev_fast_weights=prev_fast_weights,
-            return_fast_weights=return_fast_weights,
-            update_fast_weights=update_fast_weights,
-            time_valid_mask=time_valid_mask,
-            tbptt_step_size=self.ttt_tbptt_step_size,
         )
-        if return_fast_weights:
-            model_output, next_fast_weights = model_result
-        else:
-            model_output = model_result
+        model_output = model_result
         pred = self.action_decoder(model_output)
         pred = pred[:, -flat_actions.shape[1] :]
         if temporal:
@@ -368,10 +383,9 @@ class FlowMatchingActionHead(nn.Module):
             t_discretized = int(t_cont * self.num_timestep_buckets)
             timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device, dtype=torch.long)
             if self.ttt_enabled:
-                # One memory write per environment observation.  Subsequent
-                # Euler denoising calls read the updated memory without writing
-                # the same observation repeatedly.
-                pred_velocity, updated_fast_weights = self._predict_velocity(
+                # Match RoboTTT's wrapper behavior: every policy forward in
+                # the flow sampler updates the current fast-weight state.
+                pred_velocity, next_fast_weights = self._predict_velocity(
                     vl_embs,
                     actions,
                     timesteps_tensor,
@@ -379,10 +393,8 @@ class FlowMatchingActionHead(nn.Module):
                     memory_tokens=memory_tokens,
                     prev_fast_weights=next_fast_weights,
                     return_fast_weights=True,
-                    update_fast_weights=(t == 0),
+                    update_fast_weights=True,
                 )
-                if t == 0:
-                    next_fast_weights = updated_fast_weights
             else:
                 pred_velocity = self._predict_velocity(vl_embs, actions, timesteps_tensor, state)
             actions = actions + dt * pred_velocity

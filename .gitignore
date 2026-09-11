@@ -155,4 +155,7 @@ outputs/
 runs/
 logs/
 eval_log/
+slurm_logs/
+checkpoints/
+jepa_wam_assets/
 .libero_plus_config/

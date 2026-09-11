@@ -11,26 +11,40 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-def _stack_or_concat_pixel_values(values, wrist_values=None):
+def _normalize_image_tensor(value: torch.Tensor, keep_prefix_dims: int) -> torch.Tensor:
+    """Remove accidental singleton axes while preserving view/time axes."""
+    if value.ndim < 3 or value.shape[-3] != 3:
+        raise ValueError(f"Expected image tensor ending in [3, H, W], got {tuple(value.shape)}")
+
+    prefix = list(value.shape[:-3])
+    if len(prefix) < keep_prefix_dims:
+        raise ValueError(
+            f"Expected at least {keep_prefix_dims} leading image axes, got {tuple(value.shape)}"
+        )
+    if any(size != 1 for size in prefix[keep_prefix_dims:]):
+        raise ValueError(
+            f"Unexpected non-singleton image axes after the required prefix: {tuple(value.shape)}"
+        )
+
+    normalized_shape = (*prefix[:keep_prefix_dims], *value.shape[-3:])
+    return value.reshape(normalized_shape)
+
+
+def _stack_or_concat_pixel_values(values, wrist_values=None, pair: bool = False, temporal: bool = False):
     example = values[0]
     if isinstance(example, torch.Tensor):
-        stacked = torch.stack(values)
+        # Keep [time], [view], and [pair] axes explicitly.  The final layout
+        # is [B,T,V,C,H,W] for current images and [B,T,V,P,C,H,W] for pairs.
+        primary_prefix_dims = (2 if pair else 1) if temporal else (1 if pair else 0)
+        stacked = torch.stack(
+            [_normalize_image_tensor(value, primary_prefix_dims) for value in values]
+        )
         if wrist_values is not None:
-            stacked_wrist = torch.stack(wrist_values)
-            # The wrist tensor has exactly one additional view axis.  Resolve
-            # that axis structurally so both old single-frame examples and new
-            # [time, ...] RoboTTT examples collate correctly.
-            view_dims = [
-                dim
-                for dim in range(1, stacked_wrist.ndim)
-                if stacked_wrist.shape[:dim] + stacked_wrist.shape[dim + 1 :] == stacked.shape
-            ]
-            if len(view_dims) != 1:
-                raise ValueError(
-                    f"Could not identify wrist-view axis: primary={tuple(stacked.shape)}, "
-                    f"wrist={tuple(stacked_wrist.shape)}."
-                )
-            view_dim = view_dims[0]
+            wrist_prefix_dims = (3 if pair else 2) if temporal else (2 if pair else 1)
+            stacked_wrist = torch.stack(
+                [_normalize_image_tensor(value, wrist_prefix_dims) for value in wrist_values]
+            )
+            view_dim = 2 if temporal else 1
             return torch.cat((stacked.unsqueeze(view_dim), stacked_wrist), dim=view_dim)
         return stacked
 
@@ -39,6 +53,8 @@ def _stack_or_concat_pixel_values(values, wrist_values=None):
             key: _stack_or_concat_pixel_values(
                 [value[key] for value in values],
                 None if wrist_values is None else [value[key] for value in wrist_values],
+                pair=pair,
+                temporal=temporal,
             )
             for key in example
         }
@@ -94,12 +110,17 @@ class PaddedCollatorForActionPrediction:
         assert all([pv is not None for pv in pixel_values]), "Invalid VLA Example with `pixel_values = None`!"
 
         pixel_values_wrist = [instance["pixel_values_wrist"] for instance in instances] if "pixel_values_wrist" in instances[0] else None
-        pixel_values = _stack_or_concat_pixel_values(pixel_values, pixel_values_wrist)
+        temporal = self.temporal_context_length > 1
+        pixel_values = _stack_or_concat_pixel_values(
+            pixel_values, pixel_values_wrist, pair=False, temporal=temporal
+        )
 
         if pair_pixel_values[0] is not None:
             pair_pixel_values = _stack_or_concat_pixel_values(
                 pair_pixel_values,
                 pair_pixel_values_wrist if pair_pixel_values_wrist[0] is not None else None,
+                pair=True,
+                temporal=temporal,
             )
         else:
             pair_pixel_values = None

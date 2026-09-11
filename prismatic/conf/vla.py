@@ -58,11 +58,13 @@ class VLAConfig(ChoiceRegistry):
     fm_max_seq_len: int = 1_024
     fm_state_dropout: float = 0.5
 
-    # RoboTTT-style temporal fast-weight memory.  Disabled by default so the
-    # released single-frame JEPA-WAM checkpoint remains load-compatible.
+    # RoboTTT-style action-token fast-weight memory.  Disabled by default so
+    # the released single-frame JEPA-WAM checkpoint remains load-compatible.
     ttt_enabled: bool = False
     ttt_context_length: int = 1
     ttt_num_register_tokens: int = 16
+    # Retained for config compatibility; the JEPA-WAM RoboTTT variant uses one
+    # action-token wrapper before DiT rather than selecting DiT blocks.
     ttt_layer_indices: Tuple[int, ...] = ()
     ttt_memory_hidden_dim: Optional[int] = None
     # Dimension of the representation written into TTT.  By default this is
