@@ -164,9 +164,17 @@ class TemporalTTTLayer(nn.Module):
             return F.mse_loss(prediction, one_value)
 
         # ``torch.func.grad`` preserves the outer graph during training, so the
-        # slow parameters learn an initialization and an update rule.
+        # slow parameters learn an initialization and an update rule.  During
+        # deployment the caller is under ``torch.no_grad()``; temporarily
+        # enabling grad is still required to compute the inner update, but the
+        # resulting fast weights must be detached or every observation would
+        # retain a graph through the whole rollout.
+        grad_fn = vmap(grad(loss_fn), in_dims=(0, 0, 0))
+        if torch.is_grad_enabled():
+            return grad_fn(memory_params, keys, values)
         with torch.enable_grad():
-            return vmap(grad(loss_fn), in_dims=(0, 0, 0))(memory_params, keys, values)
+            gradients = grad_fn(memory_params, keys, values)
+        return {name: gradient.detach() for name, gradient in gradients.items()}
 
     def _retrieve(self, memory_params: dict[str, torch.Tensor], queries: torch.Tensor) -> torch.Tensor:
         def retrieve_fn(params, one_query):
@@ -224,7 +232,7 @@ class TemporalTTTLayer(nn.Module):
             else:
                 forget = torch.ones(batch, dtype=tokens.dtype, device=tokens.device)
             if valid_mask is not None:
-                forget = forget * valid_mask.to(dtype=forget.dtype)
+                forget = forget * valid_mask.to(device=tokens.device, dtype=forget.dtype)
 
             deltas = {
                 name: -learning_rate * gradient * forget.view(batch, *([1] * (gradient.ndim - 1)))
@@ -498,7 +506,10 @@ class DiT(ModelMixin, ConfigMixin):
         self.ttt_layer_indices = tuple(ttt_layer_indices)
         if any(index < 0 or index >= num_layers for index in self.ttt_layer_indices):
             raise ValueError(f"Invalid TTT layer indices {self.ttt_layer_indices} for a {num_layers}-layer DiT.")
-        ttt_layer_indices_set = set(self.ttt_layer_indices)
+        # Ignore an accidental layer selection when TTT is disabled.  This
+        # keeps the feature flag authoritative and prevents constructing
+        # memory modules that can never receive a valid JEPA memory input.
+        ttt_layer_indices_set = set(self.ttt_layer_indices) if ttt_enabled else set()
         if ttt_enabled and not ttt_layer_indices_set:
             raise ValueError("TTT is enabled but no DiT layers were selected.")
         memory_dim = ttt_memory_dim or self.inner_dim

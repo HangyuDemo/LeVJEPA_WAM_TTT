@@ -63,8 +63,8 @@ class VLAConfig(ChoiceRegistry):
     ttt_enabled: bool = False
     ttt_context_length: int = 1
     ttt_num_register_tokens: int = 16
-    # Retained for config compatibility; the JEPA-WAM RoboTTT variant uses one
-    # action-token wrapper before DiT rather than selecting DiT blocks.
+    # Empty means all DiT blocks when TTT is enabled; a non-empty tuple selects
+    # specific DiT blocks (for example, (0, 4, 8, 12)).
     ttt_layer_indices: Tuple[int, ...] = ()
     ttt_memory_hidden_dim: Optional[int] = None
     # Dimension of the representation written into TTT.  By default this is
@@ -84,6 +84,50 @@ class VLAConfig(ChoiceRegistry):
     reduce_in_full_precision: bool = True
 
     def __post_init__(self) -> None:
+        # draccus/YAML may materialize a list or null for this optional tuple.
+        # Normalize it once so validation and model construction see one shape.
+        self.ttt_layer_indices = tuple(self.ttt_layer_indices or ())
+        positive_fields = {
+            "max_steps": self.max_steps,
+            "expected_world_size": self.expected_world_size,
+            "global_batch_size": self.global_batch_size,
+            "per_device_batch_size": self.per_device_batch_size,
+            "d_action": self.d_action,
+            "d_proprio": self.d_proprio,
+            "action_horizon": self.action_horizon,
+            "flow_gr00t_placeholder_tokens": self.flow_gr00t_placeholder_tokens,
+            "fm_hidden_size": self.fm_hidden_size,
+            "fm_num_layers": self.fm_num_layers,
+            "fm_num_inference_timesteps": self.fm_num_inference_timesteps,
+            "fm_num_timestep_buckets": self.fm_num_timestep_buckets,
+            "fm_num_target_vision_tokens": self.fm_num_target_vision_tokens,
+            "fm_max_seq_len": self.fm_max_seq_len,
+        }
+        invalid = [name for name, value in positive_fields.items() if value < 1]
+        if invalid:
+            raise ValueError(f"These VLA dimensions/step counts must be positive: {', '.join(invalid)}.")
+        if self.global_batch_size % self.per_device_batch_size != 0:
+            raise ValueError("global_batch_size must be divisible by per_device_batch_size.")
+        if self.global_batch_size % (self.per_device_batch_size * self.expected_world_size) != 0:
+            raise ValueError(
+                "global_batch_size must be divisible by per_device_batch_size * expected_world_size; "
+                f"got global={self.global_batch_size}, per_device={self.per_device_batch_size}, "
+                f"expected_world_size={self.expected_world_size}."
+            )
+        if self.fm_noise_beta_alpha <= 0 or self.fm_noise_beta_beta <= 0:
+            raise ValueError("fm_noise_beta_alpha and fm_noise_beta_beta must be positive.")
+        if not 0 < self.fm_noise_s <= 1:
+            raise ValueError("fm_noise_s must be in the interval (0, 1].")
+        if not 0 <= self.fm_state_dropout < 1:
+            raise ValueError("fm_state_dropout must be in the interval [0, 1).")
+        if self.ttt_memory_dim is not None and self.ttt_memory_dim < 1:
+            raise ValueError("ttt_memory_dim must be positive when provided.")
+        if self.ttt_memory_hidden_dim is not None and self.ttt_memory_hidden_dim < 1:
+            raise ValueError("ttt_memory_hidden_dim must be positive when provided.")
+        if any(index < 0 for index in self.ttt_layer_indices):
+            raise ValueError("ttt_layer_indices must contain non-negative DiT block indices.")
+        if len(set(self.ttt_layer_indices)) != len(self.ttt_layer_indices):
+            raise ValueError("ttt_layer_indices must not contain duplicates.")
         if self.ttt_context_length < 1:
             raise ValueError("ttt_context_length must be positive.")
         if self.ttt_enabled and self.ttt_context_length < 2:

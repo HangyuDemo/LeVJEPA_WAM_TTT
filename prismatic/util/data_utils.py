@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
+from prismatic.vla.constants import ACTION_TOKEN_BEGIN_IDX, NUM_TOKENS
+
 def _normalize_image_tensor(value: torch.Tensor, keep_prefix_dims: int) -> torch.Tensor:
     """Remove accidental singleton axes while preserving view/time axes."""
     if value.ndim < 3 or value.shape[-3] != 3:
@@ -71,6 +73,34 @@ class PaddedCollatorForActionPrediction:
     target_action_dim: int | None = None
     target_proprio_dim: int | None = None
     temporal_context_length: int = 1
+    action_placeholder_tokens: int = NUM_TOKENS
+
+    def __post_init__(self) -> None:
+        if self.model_max_length < 1:
+            raise ValueError("model_max_length must be positive.")
+        if self.action_placeholder_tokens < 1:
+            raise ValueError("action_placeholder_tokens must be positive.")
+        if self.action_placeholder_tokens >= self.model_max_length:
+            raise ValueError(
+                "action_placeholder_tokens must leave room for at least one prompt token; "
+                f"got placeholders={self.action_placeholder_tokens}, max_length={self.model_max_length}."
+            )
+        if self.temporal_context_length < 1:
+            raise ValueError("temporal_context_length must be positive.")
+
+    def _truncate_input_ids(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Keep the action-placeholder suffix when a prompt exceeds context length."""
+        if tokens.ndim != 1:
+            raise ValueError(f"Each input_ids item must be rank-1, got {tuple(tokens.shape)}.")
+        if tokens.numel() <= self.model_max_length:
+            return tokens
+
+        keep_prefix = self.model_max_length - self.action_placeholder_tokens
+        if tokens.numel() < self.action_placeholder_tokens:
+            raise ValueError("An input sequence is shorter than the configured action-placeholder span.")
+        # VLABatchTransform appends placeholders as the final tokens.  Trim
+        # only the prompt prefix so `_select_action_memory` remains valid.
+        return torch.cat((tokens[:keep_prefix], tokens[-self.action_placeholder_tokens :]))
 
     @staticmethod
     def _right_pad_last_dim(tensor: torch.Tensor, target_dim: int | None, name: str) -> tuple[torch.Tensor, int]:
@@ -86,7 +116,19 @@ class PaddedCollatorForActionPrediction:
         return torch.cat((tensor, padding), dim=-1), valid_dim
 
     def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        input_ids = [instance["input_ids"] for instance in instances]
+        if not instances:
+            raise ValueError("The action collator received an empty batch.")
+
+        input_ids = [self._truncate_input_ids(instance["input_ids"]) for instance in instances]
+        # Validate the suffix before right-padding.  The model later gathers
+        # each sample's real placeholder positions, so prompt lengths may
+        # safely differ within a batch.
+        for tokens in input_ids:
+            if tokens.numel() < self.action_placeholder_tokens:
+                raise ValueError("An input sequence is shorter than the configured action-placeholder span.")
+            suffix = tokens[-self.action_placeholder_tokens :]
+            if not torch.all(suffix == ACTION_TOKEN_BEGIN_IDX):
+                raise ValueError("Each input_ids item must end with ACTION_TOKEN_BEGIN_IDX placeholders.")
         pixel_values = [instance["pixel_values"] for instance in instances]
         pair_pixel_values = [instance.get("pair_pixel_values") for instance in instances]
         pair_pixel_values_wrist = [instance.get("pair_pixel_values_wrist") for instance in instances]
@@ -97,11 +139,26 @@ class PaddedCollatorForActionPrediction:
         else:
             dataset_names = None
 
+        def _same_presence(values, name: str) -> None:
+            present = values[0] is not None
+            if any((value is not None) != present for value in values):
+                raise ValueError(f"Batch mixes examples with and without `{name}`.")
+
+        _same_presence(pair_pixel_values, "pair_pixel_values")
+        _same_presence(pair_pixel_values_wrist, "pair_pixel_values_wrist")
+        if pair_pixel_values[0] is None and pair_pixel_values_wrist[0] is not None:
+            raise ValueError("`pair_pixel_values_wrist` cannot be provided without `pair_pixel_values`.")
+        _same_presence(action_valid_masks, "action_valid_mask")
+        _same_presence(time_valid_masks, "time_valid_mask")
+        has_wrist = "pixel_values_wrist" in instances[0]
+        if any(("pixel_values_wrist" in instance) != has_wrist for instance in instances):
+            raise ValueError("Batch mixes examples with and without `pixel_values_wrist`.")
+        has_proprio = "proprio" in instances[0]
+        if any(("proprio" in instance) != has_proprio for instance in instances):
+            raise ValueError("Batch mixes examples with and without `proprio`.")
+
         assert self.padding_side == "right", f"Invalid Tokenizer `{self.padding_side = }`"
         input_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.pad_token_id)
-
-        # Truncate (if necessary)
-        input_ids = input_ids[:, : self.model_max_length]
 
         # Get `attention_mask` by checking for `pad_token_id`
         attention_mask = input_ids.ne(self.pad_token_id)
@@ -109,7 +166,7 @@ class PaddedCollatorForActionPrediction:
         # [Contract] For VLA Training =>> No "Unimodal" Data!
         assert all([pv is not None for pv in pixel_values]), "Invalid VLA Example with `pixel_values = None`!"
 
-        pixel_values_wrist = [instance["pixel_values_wrist"] for instance in instances] if "pixel_values_wrist" in instances[0] else None
+        pixel_values_wrist = [instance["pixel_values_wrist"] for instance in instances] if has_wrist else None
         temporal = self.temporal_context_length > 1
         pixel_values = _stack_or_concat_pixel_values(
             pixel_values, pixel_values_wrist, pair=False, temporal=temporal

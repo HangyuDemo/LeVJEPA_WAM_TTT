@@ -53,8 +53,13 @@ The final Qwen layer produces:
 ```text
 qwen_hidden: [B, S, D_llm]
 visual_hidden = qwen_hidden[:, 1 : 1 + V * N]
-action_memory = qwen_hidden[:, -N_action_placeholders:]
+action_memory = gather(qwen_hidden, per-row action-placeholder positions)
 ```
+
+Because prompts have different lengths, the collator right-pads each row.
+The implementation therefore finds the `ACTION_TOKEN_BEGIN_IDX` positions in
+each row and gathers those hidden states after accounting for the visual-token
+insertion; it does not read padding states from a global `[:, -N:]` slice.
 
 ## 4. Flow-Matching Action Head
 

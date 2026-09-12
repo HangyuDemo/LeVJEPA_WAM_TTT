@@ -379,6 +379,7 @@ def train(cfg: TrainConfig) -> None:
         visual_token_pair_offset=cfg.vla.visual_token_pair_offset,
         target_action_dim=cfg.vla.d_action,
         target_proprio_dim=cfg.vla.d_proprio,
+        flow_gr00t_placeholder_tokens=cfg.vla.flow_gr00t_placeholder_tokens,
         temporal_context_length=cfg.vla.ttt_context_length,
     )
 

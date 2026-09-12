@@ -6,32 +6,34 @@ the released single-frame action head.
 
 ## Placement
 
-`TemporalTTTLayer` is placed on the action-token sequence immediately before
-the Flow-DiT policy transformer, matching RoboTTT's wrapper around an action
-token projection:
+`TemporalTTTLayer` is instantiated inside the selected Flow-DiT blocks. Each
+block first performs its self/cross attention, then applies TTT, and finally
+runs its feed-forward network:
 
 ```text
-action encoder -> TemporalTTTLayer -> Flow-DiT transformer
+attention -> TemporalTTTLayer -> feed-forward network
 ```
 
-V-JEPA, the visual projector, and Qwen are not changed.  Each cross-attention
-DiT block first lets action tokens query Qwen visual tokens (with the action
-placeholder tokens appended to preserve language/task context).  TTT then has
-two inputs: the DiT sequence used for queries and the WAM prediction used for
+V-JEPA, the visual projector, and Qwen are not changed. Each DiT block lets
+the action-token sequence query the Qwen action-placeholder states. TTT then
+uses the post-attention DiT sequence for queries and the WAM prediction for
 memory writes:
 
 ```text
-query:           noisy action-token features
+query:           post-attention DiT hidden states
 memory:          WAM(visual Qwen tokens) -> predicted V-JEPA representation (Ŷ)
 ```
 
-The layer uses a fast two-layer GELU MLP in the V-JEPA dimension.  At every
+The WAM-predicted V-JEPA representation supplies both memory keys and values;
+the paired future target is used only by the alignment loss.
+
+The layer uses a fast two-layer GELU MLP in the V-JEPA dimension. At every
 environment timestep it updates that MLP's fast weights from the predicted
-V-JEPA tokens and retrieves a residual for the DiT query tokens.  The residual
-has a near-zero, learned tanh gate, preserving the pretrained DiT behavior at
-initialization.  The paired future V-JEPA target (Y) is stop-gradient loss
-supervision only and is never passed to TTT (otherwise deployment would leak
-future information).
+V-JEPA tokens and retrieves a residual for the post-attention DiT tokens. The
+residual has a near-zero, learned tanh gate, preserving the pretrained DiT
+behavior at initialization. The paired future V-JEPA target (Y) is
+stop-gradient loss supervision only and is never passed to TTT, otherwise
+deployment would leak future information.
 
 ## Training
 
@@ -46,7 +48,9 @@ ttt_tbptt_step_size = 8
 The RLDS adapter then emits past-to-current trajectory windows.  Action chunks
 and flow times are independent per robot timestep (sequence action forcing).
 Fast weights are propagated over the full window while their gradients are
-detached every `ttt_tbptt_step_size` steps.
+detached every `ttt_tbptt_step_size` steps. The temporal window is packed as
+`[B*T, ...]` for per-timestep DiT attention; each TTT layer restores `[B, T, ...]`
+and updates its fast weights chronologically.
 
 ## Deployment
 
@@ -62,6 +66,8 @@ actions, fast_weights = action_head.predict_action(
 )
 ```
 
-Every Flow-Matching denoising forward updates the current fast-weight state,
-matching the original RoboTTT wrapper behavior. Discard `fast_weights` at an
-episode reset.
+The first Flow-Matching denoising evaluation for an observation updates the
+current fast-weight state. Later evaluations refine the same action chunk and
+only read that state, so one observation advances memory once. Pass the
+returned `fast_weights` to the next observation and discard them at an episode
+reset.

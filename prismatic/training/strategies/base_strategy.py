@@ -113,13 +113,49 @@ class TrainingStrategy(ABC):
         self.optimizer, self.lr_scheduler = None, None
 
         # Lightweight Validation
-        assert (
-            self.global_batch_size % self.per_device_batch_size == 0
-        ), "Per-device batch size must evenly divide global batch size!"
+        if self.global_batch_size <= 0 or self.per_device_batch_size <= 0:
+            raise ValueError(
+                "global_batch_size and per_device_batch_size must be positive; "
+                f"got global={self.global_batch_size}, per_device={self.per_device_batch_size}."
+            )
+        if self.global_batch_size % self.per_device_batch_size != 0:
+            raise ValueError("global_batch_size must be divisible by per_device_batch_size.")
         self.grad_accumulation_steps = self.global_batch_size // self.per_device_batch_size // overwatch.world_size()
+        if self.global_batch_size % (self.per_device_batch_size * overwatch.world_size()) != 0:
+            raise ValueError(
+                "global_batch_size must be divisible by per_device_batch_size * world_size; "
+                f"got global={self.global_batch_size}, per_device={self.per_device_batch_size}, "
+                f"world_size={overwatch.world_size()}."
+            )
+        if self.grad_accumulation_steps < 1:
+            raise ValueError(
+                "global_batch_size must be at least per_device_batch_size * world_size; "
+                f"got global={self.global_batch_size}, per_device={self.per_device_batch_size}, "
+                f"world_size={overwatch.world_size()}."
+            )
         if self.enable_mixed_precision_training:
             assert self.mixed_precision_dtype == torch.bfloat16, "Only BF16 mixed precision training is supported!"
             assert check_bloat16_supported(), "BFloat16 is not supported on this hardware; unset `mixed_precision`"
+
+    def _move_batch_to_device(self, value):
+        """Move tensor leaves of a collated batch to this rank's GPU.
+
+        ``DataLoader`` and the RLDS collator intentionally produce CPU
+        tensors.  FSDP moves model parameters during ``run_setup`` but does
+        not move user inputs, so leaving this step implicit causes Qwen's
+        embedding lookup (and any nested vision inputs) to fail with a device
+        mismatch on the first training batch.
+        """
+        device = torch.device("cuda", self.device_id) if torch.cuda.is_available() else torch.device("cpu")
+        if isinstance(value, torch.Tensor):
+            return value.to(device=device, non_blocking=True)
+        if isinstance(value, dict):
+            return {key: self._move_batch_to_device(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [self._move_batch_to_device(child) for child in value]
+        if isinstance(value, tuple):
+            return tuple(self._move_batch_to_device(child) for child in value)
+        return value
 
     @staticmethod
     def _read_cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
@@ -386,6 +422,7 @@ class TrainingStrategy(ABC):
             global_dataset_length = getattr(vla_dataset, "global_dataset_length", len(vla_dataset))
             epoch_denominator = max(1, math.ceil(global_dataset_length / self.global_batch_size))
             for train_idx, batch in enumerate(dataloader):
+                batch = self._move_batch_to_device(batch)
                 grad_step_ready = ((train_idx + 1) % self.grad_accumulation_steps) == 0
                 epoch_value = (metrics.global_step + 1) // epoch_denominator
                 if process_batch(

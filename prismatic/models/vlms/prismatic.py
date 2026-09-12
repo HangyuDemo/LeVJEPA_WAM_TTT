@@ -22,7 +22,7 @@ from prismatic.models.flow_gr00t_action_head import FlowMatchingActionHead
 from prismatic.models.vlms.base_vlm import VLM
 from prismatic.overwatch import initialize_overwatch
 from prismatic.util.nn_utils import MLPProjector
-from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK, NUM_TOKENS, PROPRIO_DIM
+from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, NUM_ACTIONS_CHUNK, NUM_TOKENS, PROPRIO_DIM
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -72,6 +72,8 @@ class PrismaticVLM(VLM):
 
         # Fixed public heads: Flow-GR00T plus final-layer visual-token cosine alignment.
         self.action_placeholder_tokens = kwargs.get("flow_gr00t_placeholder_tokens", NUM_TOKENS)
+        if self.action_placeholder_tokens < 1:
+            raise ValueError("flow_gr00t_placeholder_tokens must be positive.")
         self.lambda_visual_token_cosine = kwargs.get("lambda_visual_token_cosine", 0.5)
         jepa_dim = kwargs.get("d_jepa", vision_backbone.embed_dim)
         ttt_memory_dim = kwargs.get("ttt_memory_dim") or jepa_dim
@@ -292,8 +294,19 @@ class PrismaticVLM(VLM):
         llm_hidden: torch.Tensor,
         fused_attention_mask: torch.Tensor,
         num_action_tokens: int,
+        action_positions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Use the final action-placeholder span from the padded sequence."""
+        """Gather each sample's action-placeholder span from a padded sequence."""
+        if action_positions is not None:
+            if action_positions.ndim != 2 or action_positions.shape[0] != llm_hidden.shape[0]:
+                raise ValueError("action_positions must have shape [B, num_action_tokens].")
+            if action_positions.shape[1] != num_action_tokens:
+                raise ValueError("action_positions does not match num_action_tokens.")
+            if action_positions.numel() and int(action_positions.max()) >= llm_hidden.shape[1]:
+                raise ValueError("An action-placeholder position is outside the Qwen hidden sequence.")
+            gather_positions = action_positions.to(device=llm_hidden.device, dtype=torch.long).unsqueeze(-1)
+            gather_positions = gather_positions.expand(-1, -1, llm_hidden.shape[-1])
+            return llm_hidden.gather(dim=1, index=gather_positions)
         if llm_hidden.shape[1] < num_action_tokens:
             raise ValueError("Input sequence is shorter than the configured action placeholder span.")
         return llm_hidden[:, -num_action_tokens:, :]
@@ -396,6 +409,26 @@ class PrismaticVLM(VLM):
             dim=1,
         )
 
+        # Right-padding makes the placeholder suffix land at different
+        # sequence indices for different prompt lengths.  Record each row's
+        # actual positions before visual-token insertion and shift positions
+        # after BOS by the number of inserted visual tokens.
+        action_token_mask = model_input_ids.eq(ACTION_TOKEN_BEGIN_IDX)
+        action_token_counts = action_token_mask.sum(dim=1)
+        if not torch.all(action_token_counts == self.action_placeholder_tokens):
+            raise ValueError(
+                "Each sample must contain exactly the configured number of "
+                "ACTION_TOKEN_BEGIN_IDX placeholders."
+            )
+        action_positions = action_token_mask.nonzero(as_tuple=False)[:, 1].reshape(
+            model_input_ids.shape[0], self.action_placeholder_tokens
+        )
+        if not torch.all(model_attention_mask.gather(dim=1, index=action_positions)):
+            raise ValueError("Action placeholders must not be masked as padding.")
+        fused_action_positions = action_positions + (
+            action_positions >= 1
+        ).to(dtype=action_positions.dtype) * projected_patch_embeddings.shape[1]
+
         llm_output = self.llm_backbone(
             input_ids=None,
             attention_mask=fused_attention_mask,
@@ -420,6 +453,7 @@ class PrismaticVLM(VLM):
             llm_hidden,
             fused_attention_mask,
             self.action_placeholder_tokens,
+            action_positions=fused_action_positions,
         )
         # JEPA-WAM DiT conditioning: use only the action-placeholder hidden
         # states.  These tokens already contain the fused visual, language,

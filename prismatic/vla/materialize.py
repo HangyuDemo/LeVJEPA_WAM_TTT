@@ -25,12 +25,15 @@ def get_vla_dataset_and_collator(
     target_action_dim: int = 7,
     target_proprio_dim: int = 8,
     temporal_context_length: int = 1,
+    flow_gr00t_placeholder_tokens: int = NUM_TOKENS,
 ) -> Tuple[Dataset, PaddedCollatorForActionPrediction]:
+    if flow_gr00t_placeholder_tokens < 1:
+        raise ValueError("flow_gr00t_placeholder_tokens must be positive.")
     batch_transform = VLABatchTransform(
         base_tokenizer=tokenizer,
         image_transform=image_transform,
         prompt_builder_fn=prompt_builder_fn,
-        flow_gr00t_placeholder_tokens=NUM_TOKENS,
+        flow_gr00t_placeholder_tokens=flow_gr00t_placeholder_tokens,
         visual_token_pair_offset=visual_token_pair_offset,
         temporal_context_length=temporal_context_length,
     )
@@ -40,6 +43,7 @@ def get_vla_dataset_and_collator(
         padding_side="right",
         target_action_dim=target_action_dim,
         target_proprio_dim=target_proprio_dim,
+        action_placeholder_tokens=flow_gr00t_placeholder_tokens,
         temporal_context_length=temporal_context_length,
     )
     dataset = RLDSDataset(
