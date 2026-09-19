@@ -31,6 +31,7 @@ from experiments.robot.libero.libero_utils import (
 )
 from experiments.robot.openvla_utils import _is_native_prismatic_checkpoint_path
 from experiments.robot.robot_utils import (
+    DATE,
     DATE_TIME,
     get_action,
     get_model,
@@ -88,6 +89,7 @@ class GenerateConfig:
     base_vlm: Union[str, Path] = ""
     llm_checkpoint_path: Union[str, Path] = ""
     vjepa_checkpoint_path: Union[str, Path] = ""
+    levjepa_checkpoint_path: Union[str, Path] = ""
     task_suite_name: str = TaskSuite.LIBERO_SPATIAL.value
     libero_plus_categories: str = "all"
     num_trials_per_task: int = 1
@@ -98,7 +100,9 @@ class GenerateConfig:
     env_img_res: int = 384
     unnorm_key: Optional[str] = None
     local_log_dir: str = "./experiments/logs"
+    result_root: Optional[str] = None
     save_rollouts: bool = True
+    resume_from: Optional[Union[str, Path]] = None
     seed: int = 7
 
 
@@ -153,10 +157,13 @@ def _resolve_categories(spec: str) -> Optional[set[str]]:
 def _validate_config(cfg: GenerateConfig) -> None:
     if not _is_native_prismatic_checkpoint_path(cfg.pretrained_checkpoint):
         raise ValueError("pretrained_checkpoint must be a local `runs/.../checkpoints/*.pt` file.")
-    for name in ("base_vlm", "llm_checkpoint_path", "vjepa_checkpoint_path"):
+    for name in ("base_vlm", "llm_checkpoint_path"):
         path = Path(os.path.expanduser(str(getattr(cfg, name))))
         if not path.exists():
             raise ValueError(f"{name} does not exist: {path}")
+    vision_paths = (cfg.vjepa_checkpoint_path, cfg.levjepa_checkpoint_path)
+    if not any(Path(os.path.expanduser(str(path))).exists() for path in vision_paths if path):
+        raise ValueError("Set an existing V-JEPA or LeVJEPA checkpoint path.")
     if cfg.task_suite_name not in TASK_MAX_STEPS:
         raise ValueError(f"Unsupported suite `{cfg.task_suite_name}`; choose from {sorted(TASK_MAX_STEPS)}.")
     if cfg.num_trials_per_task <= 0:
@@ -167,6 +174,8 @@ def _validate_config(cfg: GenerateConfig) -> None:
         raise ValueError("max_episode_steps must be positive when provided.")
     if cfg.num_open_loop_steps <= 0:
         raise ValueError("num_open_loop_steps must be positive.")
+    if cfg.resume_from is not None and not Path(os.path.expanduser(str(cfg.resume_from))).is_file():
+        raise ValueError(f"resume_from does not exist: {cfg.resume_from}")
 
 
 def _resolve_unnorm_key(cfg: GenerateConfig, model) -> None:
@@ -255,6 +264,158 @@ def _log_summary(stats: EvalStats, log_file) -> float:
     return success_rate
 
 
+def _summary_dir(cfg: GenerateConfig) -> Path:
+    if cfg.result_root:
+        result_dir = Path(os.path.expanduser(str(cfg.result_root))) / cfg.task_suite_name
+    else:
+        result_dir = Path("./rollout") / cfg.task_suite_name / DATE
+    result_dir.mkdir(parents=True, exist_ok=True)
+    return result_dir
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Replace the summary only after a complete JSON document is written."""
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    with open(temporary_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, path)
+
+
+def _build_summary(
+    cfg: GenerateConfig,
+    stats: EvalStats,
+    evaluated_tasks: int,
+    log_path: Path,
+    result_dir: Path,
+    episode_results: list[dict],
+    status: str,
+) -> dict:
+    success_rate = stats.total_successes / stats.total_episodes if stats.total_episodes else 0.0
+    return {
+        "status": status,
+        "task_suite": cfg.task_suite_name,
+        "categories": cfg.libero_plus_categories,
+        "evaluated_tasks": evaluated_tasks,
+        "trials_per_task": cfg.num_trials_per_task,
+        "total_episodes": stats.total_episodes,
+        "successes": stats.total_successes,
+        "success_rate": success_rate,
+        "log_file": str(log_path),
+        "rollout_directory": str(result_dir),
+        "last_episode": episode_results[-1] if episode_results else None,
+        "episode_results": episode_results,
+        "category_results": {
+            category: {
+                "successes": stats.category_successes.get(category, 0),
+                "episodes": stats.category_totals[category],
+                "success_rate": stats.category_successes.get(category, 0) / stats.category_totals[category],
+            }
+            for category in stats.category_totals
+        },
+        "difficulty_results": {
+            str(difficulty): {
+                "successes": stats.difficulty_successes.get(difficulty, 0),
+                "episodes": stats.difficulty_totals[difficulty],
+                "success_rate": stats.difficulty_successes.get(difficulty, 0) / stats.difficulty_totals[difficulty],
+            }
+            for difficulty in stats.difficulty_totals
+        },
+    }
+
+
+def _write_progress_summary(
+    cfg: GenerateConfig,
+    stats: EvalStats,
+    evaluated_tasks: int,
+    log_path: Path,
+    json_path: Path,
+    episode_results: list[dict],
+) -> None:
+    summary = _build_summary(
+        cfg,
+        stats,
+        evaluated_tasks,
+        log_path,
+        json_path.parent,
+        episode_results,
+        status="running",
+    )
+    _atomic_write_json(json_path, summary)
+
+
+def _restore_progress(
+    cfg: GenerateConfig,
+    json_path: Path,
+) -> tuple[EvalStats, int, list[dict], set[tuple[int, int]]]:
+    with open(json_path, "r", encoding="utf-8") as handle:
+        summary = json.load(handle)
+    if summary.get("task_suite") != cfg.task_suite_name:
+        raise ValueError(
+            f"Resume summary belongs to `{summary.get('task_suite')}`, "
+            f"not `{cfg.task_suite_name}`: {json_path}"
+        )
+    if summary.get("categories", "all") != cfg.libero_plus_categories:
+        raise ValueError(
+            f"Resume summary uses categories `{summary.get('categories')}`, "
+            f"but `{cfg.libero_plus_categories}` was requested: {json_path}"
+        )
+    if int(summary.get("trials_per_task", cfg.num_trials_per_task)) != cfg.num_trials_per_task:
+        raise ValueError(
+            f"Resume summary uses {summary.get('trials_per_task')} trials per task, "
+            f"but {cfg.num_trials_per_task} was requested: {json_path}"
+        )
+
+    episode_results = summary.get("episode_results")
+    if not isinstance(episode_results, list):
+        raise ValueError(
+            f"Resume summary has no episode_results; it was created by an older evaluator: {json_path}"
+        )
+
+    stats = EvalStats()
+    completed_episode_keys = set()
+    for episode in episode_results:
+        if not isinstance(episode, dict):
+            raise ValueError(f"Invalid episode entry in resume summary: {json_path}")
+        task_id = int(episode["task_id"])
+        episode_index = int(episode["episode_index"])
+        _record_episode(
+            stats,
+            bool(episode["success"]),
+            episode.get("category"),
+            episode.get("difficulty"),
+        )
+        completed_episode_keys.add((task_id, episode_index))
+    evaluated_tasks = int(summary.get("evaluated_tasks", 0))
+    return stats, evaluated_tasks, episode_results, completed_episode_keys
+
+
+def _write_summary(
+    cfg: GenerateConfig,
+    stats: EvalStats,
+    evaluated_tasks: int,
+    log_path: Path,
+    json_path: Path,
+    episode_results: list[dict],
+) -> Path:
+    """Write the completed evaluation metrics as the final JSON snapshot."""
+    result_dir = json_path.parent
+    summary = _build_summary(
+        cfg,
+        stats,
+        evaluated_tasks,
+        log_path,
+        result_dir,
+        episode_results,
+        status="completed",
+    )
+    _atomic_write_json(json_path, summary)
+    print(f"Saved evaluation summary at {json_path}")
+    return json_path
+
+
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> float:
     _validate_config(cfg)
@@ -268,8 +429,29 @@ def eval_libero(cfg: GenerateConfig) -> float:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"libero-plus-{cfg.task_suite_name}-{DATE_TIME}.txt"
     task_suite = benchmark.get_benchmark_dict()[cfg.task_suite_name]()
-    stats = EvalStats()
-    evaluated_tasks = 0
+    if cfg.resume_from is not None:
+        summary_json_path = Path(os.path.expanduser(str(cfg.resume_from))).resolve()
+        stats, evaluated_tasks, episode_results, completed_episode_keys = _restore_progress(
+            cfg,
+            summary_json_path,
+        )
+        result_dir = summary_json_path.parent
+        print(f"Resuming evaluation from {summary_json_path}")
+    else:
+        stats = EvalStats()
+        evaluated_tasks = 0
+        episode_results = []
+        completed_episode_keys = set()
+        result_dir = _summary_dir(cfg)
+        summary_json_path = result_dir / f"summary-{DATE_TIME}.json"
+    _write_progress_summary(
+        cfg,
+        stats,
+        evaluated_tasks,
+        log_path,
+        summary_json_path,
+        episode_results,
+    )
 
     with open(log_path, "w", encoding="utf-8") as log_file:
         _log(f"Suite: {cfg.task_suite_name}", log_file)
@@ -281,6 +463,11 @@ def eval_libero(cfg: GenerateConfig) -> float:
             difficulty_value = metadata.get("difficulty_level")
             difficulty = int(difficulty_value) if difficulty_value is not None else None
             if selected_categories is not None and category not in selected_categories:
+                continue
+            task_episode_keys = {
+                (task_id, episode_idx) for episode_idx in range(cfg.num_trials_per_task)
+            }
+            if task_episode_keys.issubset(completed_episode_keys):
                 continue
             if cfg.max_tasks is not None and evaluated_tasks >= cfg.max_tasks:
                 break
@@ -315,6 +502,29 @@ def eval_libero(cfg: GenerateConfig) -> float:
                             log_file=log_file,
                             task_suite_name=cfg.task_suite_name,
                         )
+                    episode_results.append(
+                        {
+                            "task_id": task_id,
+                            "task_name": task.name,
+                            "task_description": task_description,
+                            "category": category,
+                            "difficulty": difficulty,
+                            "episode_index": episode_idx,
+                            "success": bool(success),
+                        }
+                    )
+                    completed_episode_keys.add((task_id, episode_idx))
+                    completed_tasks = evaluated_tasks + int(
+                        episode_idx + 1 == cfg.num_trials_per_task
+                    )
+                    _write_progress_summary(
+                        cfg,
+                        stats,
+                        completed_tasks,
+                        log_path,
+                        summary_json_path,
+                        episode_results,
+                    )
             finally:
                 env.close()
 
@@ -327,7 +537,17 @@ def eval_libero(cfg: GenerateConfig) -> float:
 
         if stats.total_episodes == 0:
             raise ValueError("No LIBERO-Plus tasks matched the requested category filter.")
-        return _log_summary(stats, log_file)
+        _log_summary(stats, log_file)
+
+    _write_summary(
+        cfg,
+        stats,
+        evaluated_tasks,
+        log_path,
+        summary_json_path,
+        episode_results,
+    )
+    return stats.total_successes / stats.total_episodes
 
 
 if __name__ == "__main__":

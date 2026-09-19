@@ -305,6 +305,74 @@ class TemporalTTTLayer(nn.Module):
         return memory_out * self.memory_out_layerscale.tanh(), state
 
 
+class RoboTTTStyleActionWrapper(nn.Module):
+    """RoboTTT-style adapter attached to one selected DiT block.
+
+    The wrapped memory sees only the action-token output of the block.  The
+    surrounding DiT block remains the pretrained policy computation; this
+    module adds a small, near-zero-gated recurrent residual exactly like the
+    standalone ``robo_ttt.TTTWrapper``.  One independent fast-weight state is
+    carried for every selected wrapper, rather than allocating a state slot
+    for every DiT block.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        memory_hidden_dim: int,
+        *,
+        memory_dim: Optional[int],
+        memory_source: str,
+        learned_forget: bool = True,
+    ) -> None:
+        super().__init__()
+        if memory_source not in {"jepa", "action_tokens"}:
+            raise ValueError(f"Unsupported RoboTTT memory source: {memory_source!r}.")
+        self.memory_source = memory_source
+        self.memory = TemporalTTTLayer(
+            dim,
+            memory_hidden_dim,
+            memory_dim=memory_dim,
+            require_memory_tokens=memory_source == "jepa",
+            learned_forget=learned_forget,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        action_token_count: int,
+        memory_tokens: Optional[torch.Tensor],
+        time_steps: int,
+        prev_fast_weights=None,
+        update_fast_weights: bool = True,
+        time_valid_mask: Optional[torch.Tensor] = None,
+        tbptt_step_size: Optional[int] = None,
+    ) -> tuple[torch.Tensor, object]:
+        if action_token_count < 1 or action_token_count > hidden_states.shape[1]:
+            raise ValueError(
+                "RoboTTT action wrapper requires action_token_count within the DiT token sequence."
+            )
+
+        # This is equivalent to robo_ttt.TTTWrapper(select_tokens_slice=...):
+        # only action tokens enter the recurrent memory, while all other DiT
+        # tokens pass through unchanged.
+        action_tokens = hidden_states[:, -action_token_count:]
+        memory_out, next_fast_weights = self.memory(
+            action_tokens,
+            memory_tokens=None if self.memory_source == "action_tokens" else memory_tokens,
+            time_steps=time_steps,
+            prev_fast_weights=prev_fast_weights,
+            update_memory=update_fast_weights,
+            time_valid_mask=time_valid_mask,
+            tbptt_step_size=tbptt_step_size,
+        )
+        return torch.cat(
+            (hidden_states[:, :-action_token_count], action_tokens + memory_out),
+            dim=1,
+        ), next_fast_weights
+
+
 class TimestepEncoder(nn.Module):
     def __init__(self, embedding_dim, compute_dtype=torch.float32):
         super().__init__()
@@ -362,6 +430,7 @@ class BasicTransformerBlock(nn.Module):
         ff_bias: bool = True,
         attention_out_bias: bool = True,
         ttt_layer: Optional[TemporalTTTLayer] = None,
+        ttt_wrapper: Optional[RoboTTTStyleActionWrapper] = None,
     ):
         super().__init__()
         self.norm_type = norm_type
@@ -403,6 +472,7 @@ class BasicTransformerBlock(nn.Module):
         )
         self.final_dropout = nn.Dropout(dropout) if final_dropout else None
         self.ttt_layer = ttt_layer
+        self.ttt_wrapper = ttt_wrapper
 
     def forward(
         self,
@@ -417,6 +487,8 @@ class BasicTransformerBlock(nn.Module):
         update_fast_weights: bool = True,
         time_valid_mask: Optional[torch.Tensor] = None,
         tbptt_step_size: Optional[int] = None,
+        ttt_memory_source: str = "jepa",
+        ttt_action_token_count: Optional[int] = None,
     ) -> tuple[torch.Tensor, object]:
         if self.norm_type == "ada_norm":
             norm_hidden_states = self.norm1(hidden_states, temb)
@@ -442,17 +514,46 @@ class BasicTransformerBlock(nn.Module):
         # mixes tokens within an environment timestep; this layer mixes them
         # across environment time through its explicit fast-weight state.
         next_fast_weights = prev_fast_weights
-        if self.ttt_layer is not None:
-            ttt_memory, next_fast_weights = self.ttt_layer(
+        if self.ttt_wrapper is not None:
+            if ttt_action_token_count is None:
+                raise ValueError("RoboTTT action wrapper requires ttt_action_token_count.")
+            hidden_states, next_fast_weights = self.ttt_wrapper(
                 hidden_states,
+                action_token_count=ttt_action_token_count,
                 memory_tokens=ttt_memory_tokens,
+                time_steps=time_steps,
+                prev_fast_weights=prev_fast_weights,
+                update_fast_weights=update_fast_weights,
+                time_valid_mask=time_valid_mask,
+                tbptt_step_size=tbptt_step_size,
+            )
+        elif self.ttt_layer is not None:
+            # Legacy path: preserve the original project behavior.  In the
+            # JEPA-memory mode the full post-attention DiT token sequence is
+            # used; in the action-token mode only the action suffix is used.
+            ttt_tokens = hidden_states
+            if ttt_memory_source == "action_tokens":
+                if ttt_action_token_count is None or not 1 <= ttt_action_token_count <= hidden_states.shape[1]:
+                    raise ValueError(
+                        "Action-token TTT requires ttt_action_token_count within the DiT token sequence."
+                    )
+                ttt_tokens = hidden_states[:, -ttt_action_token_count:]
+            ttt_memory, next_fast_weights = self.ttt_layer(
+                ttt_tokens,
+                memory_tokens=None if ttt_memory_source == "action_tokens" else ttt_memory_tokens,
                 time_steps=time_steps,
                 prev_fast_weights=prev_fast_weights,
                 update_memory=update_fast_weights,
                 time_valid_mask=time_valid_mask,
                 tbptt_step_size=tbptt_step_size,
             )
-            hidden_states = hidden_states + ttt_memory
+            if ttt_memory_source == "action_tokens":
+                hidden_states = torch.cat(
+                    (hidden_states[:, :-ttt_action_token_count], hidden_states[:, -ttt_action_token_count:] + ttt_memory),
+                    dim=1,
+                )
+            else:
+                hidden_states = hidden_states + ttt_memory
 
         norm_hidden_states = self.norm3(hidden_states)
         ff_output = self.ff(norm_hidden_states)
@@ -464,6 +565,7 @@ class BasicTransformerBlock(nn.Module):
 
 class DiT(ModelMixin, ConfigMixin):
     _supports_gradient_checkpointing = True
+    DEFAULT_TTT_LAYER_INDICES = (3, 7, 11, 15)
 
     @register_to_config
     def __init__(
@@ -487,6 +589,8 @@ class DiT(ModelMixin, ConfigMixin):
         interleave_self_attention=False,
         cross_attention_dim: Optional[int] = None,
         ttt_enabled: bool = False,
+        ttt_memory_source: str = "jepa",
+        ttt_architecture: str = "wrapper",
         ttt_layer_indices: Optional[Sequence[int]] = None,
         ttt_memory_hidden_dim: Optional[int] = None,
         ttt_memory_dim: Optional[int] = None,
@@ -499,10 +603,27 @@ class DiT(ModelMixin, ConfigMixin):
         self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
         self.gradient_checkpointing = False
         self.ttt_enabled = ttt_enabled
+        if ttt_architecture not in {"inline", "wrapper"}:
+            raise ValueError(
+                "ttt_architecture must be either 'inline' or 'wrapper', "
+                f"got {ttt_architecture!r}."
+            )
+        self.ttt_architecture = ttt_architecture
+        if ttt_memory_source not in {"jepa", "action_tokens"}:
+            raise ValueError(
+                "ttt_memory_source must be either 'jepa' or 'action_tokens', "
+                f"got {ttt_memory_source!r}."
+            )
+        self.ttt_memory_source = ttt_memory_source
         self.ttt_tbptt_step_size = ttt_tbptt_step_size
 
-        if ttt_layer_indices is None:
-            ttt_layer_indices = tuple(range(num_layers)) if ttt_enabled else ()
+        if ttt_layer_indices is None or len(tuple(ttt_layer_indices)) == 0:
+            if not ttt_enabled:
+                ttt_layer_indices = ()
+            elif ttt_architecture == "inline":
+                ttt_layer_indices = tuple(range(num_layers))
+            else:
+                ttt_layer_indices = tuple(index for index in self.DEFAULT_TTT_LAYER_INDICES if index < num_layers)
         self.ttt_layer_indices = tuple(ttt_layer_indices)
         if any(index < 0 or index >= num_layers for index in self.ttt_layer_indices):
             raise ValueError(f"Invalid TTT layer indices {self.ttt_layer_indices} for a {num_layers}-layer DiT.")
@@ -522,17 +643,25 @@ class DiT(ModelMixin, ConfigMixin):
         for idx in range(self.config.num_layers):
             use_self_attn = idx % 2 == 1 and interleave_self_attention
             curr_cross_attention_dim = cross_attention_dim if not use_self_attn else None
-            ttt_layer = (
-                TemporalTTTLayer(
-                    self.inner_dim,
-                    memory_hidden_dim,
-                    memory_dim=memory_dim,
-                    require_memory_tokens=True,
-                    learned_forget=ttt_learned_forget,
-                )
-                if idx in ttt_layer_indices_set
-                else None
-            )
+            ttt_layer = None
+            ttt_wrapper = None
+            if idx in ttt_layer_indices_set:
+                if ttt_architecture == "wrapper":
+                    ttt_wrapper = RoboTTTStyleActionWrapper(
+                        self.inner_dim,
+                        memory_hidden_dim,
+                        memory_dim=memory_dim,
+                        memory_source=ttt_memory_source,
+                        learned_forget=ttt_learned_forget,
+                    )
+                else:
+                    ttt_layer = TemporalTTTLayer(
+                        self.inner_dim,
+                        memory_hidden_dim,
+                        memory_dim=memory_dim,
+                        require_memory_tokens=ttt_memory_source == "jepa",
+                        learned_forget=ttt_learned_forget,
+                    )
             all_blocks += [
                 BasicTransformerBlock(
                     self.inner_dim,
@@ -550,6 +679,7 @@ class DiT(ModelMixin, ConfigMixin):
                     final_dropout=final_dropout,
                     cross_attention_dim=curr_cross_attention_dim,
                     ttt_layer=ttt_layer,
+                    ttt_wrapper=ttt_wrapper,
                 )
             ]
         self.transformer_blocks = nn.ModuleList(all_blocks)
@@ -571,9 +701,12 @@ class DiT(ModelMixin, ConfigMixin):
         update_fast_weights: bool = True,
         time_valid_mask: Optional[torch.Tensor] = None,
         tbptt_step_size: Optional[int] = None,
+        ttt_memory_source: Optional[str] = None,
+        ttt_action_token_count: Optional[int] = None,
     ):
         if time_steps < 1 or hidden_states.shape[0] % time_steps:
             raise ValueError("The DiT batch dimension must be divisible by `time_steps`.")
+        ttt_memory_source = ttt_memory_source or self.ttt_memory_source
         if time_valid_mask is not None:
             expected_shape = (hidden_states.shape[0] // time_steps, time_steps)
             if tuple(time_valid_mask.shape) != expected_shape:
@@ -581,10 +714,15 @@ class DiT(ModelMixin, ConfigMixin):
         if ttt_memory_tokens is not None:
             if ttt_memory_tokens.ndim != 3 or ttt_memory_tokens.shape[0] != hidden_states.shape[0]:
                 raise ValueError("ttt_memory_tokens must have shape [B*T, N_memory, D_jepa].")
+        selected_state_indices = {layer_index: state_index for state_index, layer_index in enumerate(self.ttt_layer_indices)}
+        state_slots = len(self.ttt_layer_indices) if self.ttt_architecture == "wrapper" else len(self.transformer_blocks)
         if prev_fast_weights is None:
-            prev_fast_weights = (None,) * len(self.transformer_blocks)
-        if len(prev_fast_weights) != len(self.transformer_blocks):
-            raise ValueError("Expected one TTT state slot per DiT transformer block.")
+            prev_fast_weights = (None,) * state_slots
+        if len(prev_fast_weights) != state_slots:
+            raise ValueError(
+                "Unexpected number of TTT fast-weight states: "
+                f"expected {state_slots}, got {len(prev_fast_weights)}."
+            )
 
         temb = self.timestep_encoder(timestep)
 
@@ -594,6 +732,11 @@ class DiT(ModelMixin, ConfigMixin):
 
         next_fast_weights = []
         for idx, block in enumerate(self.transformer_blocks):
+            prev_state = (
+                prev_fast_weights[selected_state_indices[idx]]
+                if self.ttt_architecture == "wrapper" and idx in selected_state_indices
+                else prev_fast_weights[idx] if self.ttt_architecture == "inline" else None
+            )
             if idx % 2 == 1 and self.config.interleave_self_attention:
                 hidden_states, next_state = block(
                     hidden_states,
@@ -603,10 +746,12 @@ class DiT(ModelMixin, ConfigMixin):
                     temb=temb,
                     time_steps=time_steps,
                     ttt_memory_tokens=ttt_memory_tokens,
-                    prev_fast_weights=prev_fast_weights[idx],
+                    prev_fast_weights=prev_state,
                     update_fast_weights=update_fast_weights,
                     time_valid_mask=time_valid_mask,
                     tbptt_step_size=tbptt_step_size or self.ttt_tbptt_step_size,
+                    ttt_memory_source=ttt_memory_source,
+                    ttt_action_token_count=ttt_action_token_count,
                 )
             else:
                 hidden_states, next_state = block(
@@ -617,13 +762,16 @@ class DiT(ModelMixin, ConfigMixin):
                     temb=temb,
                     time_steps=time_steps,
                     ttt_memory_tokens=ttt_memory_tokens,
-                    prev_fast_weights=prev_fast_weights[idx],
+                    prev_fast_weights=prev_state,
                     update_fast_weights=update_fast_weights,
                     time_valid_mask=time_valid_mask,
                     tbptt_step_size=tbptt_step_size or self.ttt_tbptt_step_size,
+                    ttt_memory_source=ttt_memory_source,
+                    ttt_action_token_count=ttt_action_token_count,
                 )
             all_hidden_states.append(hidden_states)
-            next_fast_weights.append(next_state)
+            if self.ttt_architecture == "inline" or idx in selected_state_indices:
+                next_fast_weights.append(next_state)
 
         conditioning = temb
         shift, scale = self.proj_out_1(F.silu(conditioning)).chunk(2, dim=1)

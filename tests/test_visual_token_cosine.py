@@ -55,7 +55,7 @@ def test_action_memory_uses_last_sequence_tokens_per_sample() -> None:
     torch.testing.assert_close(selected[1, :, 0], torch.tensor([17.0, 18.0, 19.0]))
 
 
-def test_action_loss_averages_the_full_chunk(monkeypatch) -> None:
+def test_action_loss_ignores_padded_chunk_targets(monkeypatch) -> None:
     head = FlowMatchingActionHead.__new__(FlowMatchingActionHead)
     torch.nn.Module.__init__(head)
     head.num_timestep_buckets = 1_000
@@ -73,10 +73,10 @@ def test_action_loss_averages_the_full_chunk(monkeypatch) -> None:
         torch.zeros(2, 1, 1),
         torch.zeros(2, 1),
         action_gt,
-        action_valid_mask=torch.zeros(2, 2, dtype=torch.bool),
+        action_valid_mask=torch.tensor([[True, False], [True, False]]),
     )
 
-    torch.testing.assert_close(loss, action_gt.square().mean())
+    torch.testing.assert_close(loss, torch.tensor(13.0))
 
 
 def test_temporal_ttt_updates_fast_weights_across_robot_timesteps() -> None:
@@ -113,6 +113,47 @@ def test_temporal_ttt_can_read_a_rollout_state_without_writing_it_again() -> Non
     assert memory_out.shape == second_tokens.shape
     assert read_state.fast_weights is state.fast_weights
     torch.testing.assert_close(read_state.step, torch.ones(2, dtype=torch.long))
+
+
+def test_inference_updates_ttt_on_each_denoising_step() -> None:
+    head = FlowMatchingActionHead.__new__(FlowMatchingActionHead)
+    torch.nn.Module.__init__(head)
+    # predict_action uses the encoder's dtype, even with a mocked predictor.
+    head.action_encoder = torch.nn.Linear(1, 1)
+    head._prepare_state = lambda proprio: proprio
+    head.action_horizon = 2
+    head.action_dim = 1
+    head.num_inference_timesteps = 4
+    head.num_timestep_buckets = 1_000
+    head.ttt_enabled = True
+    update_flags = []
+
+    def fake_predict_velocity(
+        vl_embs,
+        actions,
+        timesteps_tensor,
+        state,
+        *,
+        memory_tokens=None,
+        prev_fast_weights=None,
+        return_fast_weights=False,
+        update_fast_weights=True,
+        **kwargs,
+    ):
+        update_flags.append(update_fast_weights)
+        result = torch.zeros_like(actions)
+        return (result, prev_fast_weights) if return_fast_weights else result
+
+    head._predict_velocity = fake_predict_velocity
+    actions, _ = head.predict_action(
+        torch.zeros(1, 3, 4),
+        torch.zeros(1, 1),
+        memory_tokens=torch.zeros(1, 3, 4),
+        return_fast_weights=True,
+    )
+
+    assert actions.shape == (1, 2, 1)
+    assert update_flags == [True, True, True, True]
 
 
 def test_temporal_visual_alignment_ignores_padding_timesteps() -> None:
@@ -228,7 +269,14 @@ def test_removed_experimental_packages_are_not_published() -> None:
 
 def test_vla_scripts_only_expose_training_and_evaluation_launchers() -> None:
     public_scripts = sorted(path.name for path in (REPO_ROOT / "vla-scripts").glob("*.sh"))
-    assert public_scripts == ["libero_plus.sh", "run_visual_cosine_primary.sh"]
+    assert public_scripts == [
+        "libero_plus.sh",
+        "libero_plus_ttt.sh",
+        "libero_standard.sh",
+        "run_levjepa_wam.sh",
+        "run_visual_cosine_primary.sh",
+        "ttt_round2_config.sh",
+    ]
     assert not (REPO_ROOT / "vla-scripts" / "train.py").exists()
 
 
@@ -267,8 +315,11 @@ def test_public_launchers_require_explicit_asset_paths() -> None:
 
     for variable in ("LIBERO_DATA", "QWEN_PATH", "VJEPA_CKPT", "BASE_VLM_RUN"):
         assert f'${{{variable}:?' in training
-    for variable in ("QWEN_PATH", "VJEPA_CKPT", "BASE_VLM_RUN", "LIBERO_PATH"):
+    for variable in ("QWEN_PATH", "BASE_VLM_RUN", "LIBERO_PATH"):
         assert f'${{{variable}:?' in evaluation
+    assert 'VJEPA_CKPT="${VJEPA_CKPT:-}"' in evaluation
+    assert 'LEVJEPA_CKPT="${LEVJEPA_CKPT:-}"' in evaluation
+    assert "Set VJEPA_CKPT or LEVJEPA_CKPT" in evaluation
 
     assert "DEFAULT_CHECKPOINT" not in evaluation
     assert "JEPA_ENV" not in training

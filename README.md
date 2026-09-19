@@ -340,7 +340,33 @@ The positional arguments are:
 bash vla-scripts/libero_plus.sh CHECKPOINT TASK_SUITE CATEGORIES TRIALS
 ```
 
+For checkpoints trained by the four JEPA-WAM + TTT Slurm routes, use the
+project-local convenience launcher below. It supplies the local asset paths,
+uses LIBERO-Plus, disables rollout-video saving by default, and creates a
+unique result directory for each checkpoint and invocation:
+
+```bash
+bash vla-scripts/libero_plus_ttt.sh \
+  /home/ha865618/project/LeVJEPA_WAM_TTT/checkpoints/<run-id>/checkpoints/latest-checkpoint.pt \
+  libero_spatial all 1
+```
+
+The four `<run-id>` values are:
+
+```text
+jepa-wam-ttt-wrapper-jepa-memory-vjepa21-context8-gb1-pb1
+jepa-wam-ttt-wrapper-action-kv-vjepa21-context8-gb1-pb1
+jepa-wam-ttt-inline-jepa-memory-vjepa21-context8-gb1-pb1
+jepa-wam-ttt-inline-action-kv-vjepa21-context8-gb1-pb1
+```
+
+Set `SAVE_ROLLOUTS=True` only when rollout videos are needed. Results from
+this convenience launcher are written under `rollout_ttt/` and logs under
+`experiments/logs/ttt-*`, so they do not share the normal evaluation output
+directory.
+
 Supported task suites are `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, and `libero_90`.
+Use `all` to run the four LIBERO-Plus suites (`libero_spatial`, `libero_object`, `libero_goal`, and `libero_10`) sequentially.
 `CATEGORIES` accepts `all` or a comma-separated list of `camera`, `robot`, `language`, `light`, `background`, `sensor`,
 and `layout`.
 
@@ -362,6 +388,70 @@ bash vla-scripts/libero_plus.sh "${CHECKPOINT}" libero_spatial all 1
 
 `MAX_TASKS` and `MAX_EPISODE_STEPS` are disabled by default and should not be set for full benchmark evaluation.
 Set `DRY_RUN=1` to print the evaluator command without launching MuJoCo.
+
+### Full LIBERO-Plus evaluation with incremental JSON
+
+The following runs one episode for every task variant in all four LIBERO-Plus suites, without saving rollout videos:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SAVE_ROLLOUTS=False \
+MAX_TASKS=0 \
+MAX_EPISODE_STEPS=0 \
+bash vla-scripts/libero_plus.sh "${CHECKPOINT}" all all 1
+```
+
+Each suite writes `rollout/<suite>/<date>/summary-<timestamp>.json`. The JSON is atomically replaced after every
+completed episode, so it remains valid and shows the latest progress if the job is interrupted. The final file has
+`status: "completed"`; an interrupted run remains `status: "running"`. The evaluator still writes a text diagnostic
+log under `experiments/logs`, but `SAVE_ROLLOUTS=False` prevents MP4 generation.
+
+This is a long evaluation: with the current LIBERO-Plus task classification it runs about 10,030 episodes total.
+If it is interrupted, rerun the same command with `RESUME=1`; the launcher finds the newest summary for each suite and
+skips episodes already recorded in that JSON. Without `RESUME=1`, rerunning starts a new timestamped summary.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+SAVE_ROLLOUTS=False \
+MAX_TASKS=0 \
+MAX_EPISODE_STEPS=0 \
+RESUME=1 \
+bash vla-scripts/libero_plus.sh "${CHECKPOINT}" all all 1
+```
+
+### Small TTT evaluation with per-run summary
+
+To evaluate 100 LIBERO-Plus task variants with one episode per variant, use `MAX_TASKS=100` and `TRIALS=1`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+MAX_TASKS=100 \
+MAX_EPISODE_STEPS=0 \
+SAVE_ROLLOUTS=True \
+bash vla-scripts/libero_plus.sh "${CHECKPOINT}" libero_goal all 1
+```
+
+This produces 100 episodes, not 100 trials for each of 100 tasks. MP4 files are saved under
+`rollout/libero_goal/<date>/`. The same directory contains `summary-<timestamp>.json` with the episode count,
+successes, and success rate. Set `SAVE_ROLLOUTS=False` when only the metrics are needed.
+
+### Standard LIBERO evaluation
+
+The paper's standard LIBERO table is separate from LIBERO-Plus. It uses the standard LIBERO checkout, 10 tasks per
+suite, and 50 episodes per task. The launcher is:
+
+```bash
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /home/ha865618/project/LIBERO
+export LIBERO_PATH=/home/ha865618/project/LIBERO
+
+NUM_OPEN_LOOP_STEPS=8 \
+SAVE_ROLLOUTS=False \
+bash vla-scripts/libero_standard.sh "${CHECKPOINT}" all 50
+```
+
+The `libero_10` suite corresponds to the paper's Long suite. The standard evaluator also writes summaries beside any
+rollout videos. `NUM_OPEN_LOOP_STEPS=8` controls how many predicted actions are executed before replanning; the
+released local model architecture currently predicts an action horizon of 20.
 
 ## Results
 

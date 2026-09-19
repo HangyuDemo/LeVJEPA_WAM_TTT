@@ -7,7 +7,11 @@ from typing import Optional, Tuple, Union
 
 import torch
 
-from prismatic.models.materialize import get_llm_backbone_and_tokenizer, get_vision_backbone_and_transform
+from prismatic.models.materialize import (
+    LEVJEPA_VISION_BACKBONE_ID,
+    get_llm_backbone_and_tokenizer,
+    get_vision_backbone_and_transform,
+)
 from prismatic.models.vlas import OpenVLA
 from prismatic.overwatch import initialize_overwatch
 from prismatic.vla.constants import NUM_ACTIONS_CHUNK
@@ -60,10 +64,13 @@ def load_vla(
     base_vlm: Optional[Union[str, Path]] = None,
     llm_checkpoint_path: Optional[str] = None,
     vjepa_checkpoint_path: Optional[str] = None,
+    levjepa_checkpoint_path: Optional[str] = None,
     load_visual_token_cosine_head: bool = True,
     # Optional architecture overrides used when adding TTT layers to an
     # existing non-TTT JEPA-WAM checkpoint.
     ttt_enabled: Optional[bool] = None,
+    ttt_memory_source: Optional[str] = None,
+    ttt_architecture: Optional[str] = None,
     ttt_num_register_tokens: Optional[int] = None,
     ttt_layer_indices: Optional[Tuple[int, ...]] = None,
     ttt_memory_hidden_dim: Optional[int] = None,
@@ -88,6 +95,8 @@ def load_vla(
     vla_cfg = dict(full_cfg["vla"])
     config_overrides = {
         "ttt_enabled": ttt_enabled,
+        "ttt_memory_source": ttt_memory_source,
+        "ttt_architecture": ttt_architecture,
         "ttt_num_register_tokens": ttt_num_register_tokens,
         "ttt_layer_indices": ttt_layer_indices,
         "ttt_memory_hidden_dim": ttt_memory_hidden_dim,
@@ -95,7 +104,11 @@ def load_vla(
         "ttt_tbptt_step_size": ttt_tbptt_step_size,
     }
     vla_cfg.update({key: value for key, value in config_overrides.items() if value is not None})
-    if bool(vla_cfg.get("ttt_enabled", False)) and not load_visual_token_cosine_head:
+    if (
+        bool(vla_cfg.get("ttt_enabled", False))
+        and vla_cfg.get("ttt_memory_source", "jepa") == "jepa"
+        and not load_visual_token_cosine_head
+    ):
         raise ValueError(
             "TTT-enabled JEPA-WAM requires loading visual_token_cosine_head because it produces the JEPA memory."
         )
@@ -107,12 +120,20 @@ def load_vla(
 
     vision_id = vla_cfg.get("vision_backbone_id") or model_cfg.get("vision_backbone_id")
     llm_id = model_cfg.get("llm_backbone_id")
-    vision_checkpoint = vjepa_checkpoint_path or vla_cfg.get("vjepa_checkpoint_path") or model_cfg.get(
-        "vision_checkpoint_path"
-    )
+    if vision_id == LEVJEPA_VISION_BACKBONE_ID:
+        vision_checkpoint = (
+            levjepa_checkpoint_path
+            or vla_cfg.get("levjepa_checkpoint_path")
+            or vjepa_checkpoint_path
+            or vla_cfg.get("vjepa_checkpoint_path")
+        )
+    else:
+        vision_checkpoint = vjepa_checkpoint_path or vla_cfg.get("vjepa_checkpoint_path") or model_cfg.get(
+            "vision_checkpoint_path"
+        )
     llm_checkpoint = llm_checkpoint_path or full_cfg.get("llm_checkpoint_path") or model_cfg.get("llm_local_path")
     if not vision_checkpoint or not llm_checkpoint:
-        raise ValueError("Both V-JEPA and Qwen checkpoint paths are required to reconstruct JEPA-WAM.")
+        raise ValueError("Both the selected vision encoder and Qwen checkpoint paths are required to reconstruct JEPA-WAM.")
 
     overwatch.info(f"Loading JEPA-WAM checkpoint `{checkpoint_path}`")
     vision_backbone, _ = get_vision_backbone_and_transform(
@@ -154,6 +175,8 @@ def load_vla(
         fm_max_seq_len=int(vla_cfg.get("fm_max_seq_len", 1024)),
         fm_state_dropout=float(vla_cfg.get("fm_state_dropout", 0.5)),
         ttt_enabled=bool(vla_cfg.get("ttt_enabled", False)),
+        ttt_memory_source=vla_cfg.get("ttt_memory_source", "jepa"),
+        ttt_architecture=vla_cfg.get("ttt_architecture", "wrapper"),
         ttt_num_register_tokens=int(vla_cfg.get("ttt_num_register_tokens", 16)),
         ttt_layer_indices=vla_cfg.get("ttt_layer_indices") or None,
         ttt_memory_hidden_dim=vla_cfg.get("ttt_memory_hidden_dim"),

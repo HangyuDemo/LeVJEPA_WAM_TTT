@@ -28,7 +28,8 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         base_vlm=cfg.base_vlm,
         llm_checkpoint_path=cfg.llm_checkpoint_path,
         vjepa_checkpoint_path=cfg.vjepa_checkpoint_path,
-        # TTT memory is built from the WAM prediction head's V-JEPA
+        levjepa_checkpoint_path=getattr(cfg, "levjepa_checkpoint_path", None),
+        # TTT memory is built from the WAM prediction head's visual
         # representation, so this head must be restored for deployment.
         load_visual_token_cosine_head=True,
     )

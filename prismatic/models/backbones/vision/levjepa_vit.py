@@ -42,7 +42,7 @@ class LeVJEPAViTBackbone(VisionBackbone):
         checkpoint_path = checkpoint_path or os.environ.get("LEVJEPA_CHECKPOINT_PATH")
         if not checkpoint_path:
             raise ValueError(
-                "A LeVJEPA checkpoint is required. Pass `vjepa_checkpoint_path` or "
+                "A LeVJEPA checkpoint is required. Pass `levjepa_checkpoint_path` or "
                 "set LEVJEPA_CHECKPOINT_PATH."
             )
 

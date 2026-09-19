@@ -357,6 +357,7 @@ def make_interleaved_dataset(
     frame_transform_kwargs: Optional[Dict] = None,
     batch_size: Optional[int] = None,
     balance_weights: bool = False,
+    require_full_context: bool = False,
     traj_transform_threads: Optional[int] = None,
     traj_read_threads: Optional[int] = None,
 ) -> dl.DLataset:
@@ -440,6 +441,12 @@ def make_interleaved_dataset(
             **traj_transform_kwargs,
             num_parallel_calls=threads,
         ).flatten(num_parallel_calls=threads)
+        if require_full_context:
+            # Keep each complete, ordered window inside its source episode.
+            # Filter before decoding/shuffling so padding never counts toward
+            # the round-2 observation budget. Episodes shorter than T have no
+            # eligible windows; future-action padding is retained and masked.
+            dataset = dataset.filter(lambda item: tf.reduce_all(item["observation"]["pad_mask"]))
         datasets.append(dataset)
 
     # Interleave at the Frame Level

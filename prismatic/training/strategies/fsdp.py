@@ -101,6 +101,10 @@ class FSDPStrategy(TrainingStrategy):
         """Save a checkpoint to the `run_dir` only containing the state_dicts for trainable parameters by default."""
         assert isinstance(self.vlm, FSDP), "FSDPStrategy.save_checkpoint assumes VLM is already wrapped in FSDP!"
 
+        # Consolidate optimizer state on all ranks before saving on rank zero.
+        optimizer_state_dict = FSDP.optim_state_dict(self.vlm, self.optimizer)
+        scheduler_state_dict = self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
+
         # Summon Full State Dictionary =>> Reconstitute from Shards
         with FSDP.state_dict_type(self.vlm, self.fsdp_state_dict_type, self.fsdp_save_policy):
             full_vlm_state_dict = self.vlm.state_dict()
@@ -124,9 +128,43 @@ class FSDPStrategy(TrainingStrategy):
                         checkpoint_dir / f"step-{global_step:06d}-epoch-{epoch:02d}-loss={train_loss:.4f}.pt"
                     )
 
-                # Save Checkpoint & Copy Latest to `latest-checkpoint.pt`
-                torch.save({"model": model_state_dicts}, checkpoint_path)
+                # Save model plus optimizer/scheduler progress for exact optimizer resume.
+                torch.save(
+                    {
+                        "model": model_state_dicts,
+                        "training_state": {
+                            "optimizer": optimizer_state_dict,
+                            "lr_scheduler": scheduler_state_dict,
+                            "global_step": int(global_step),
+                            "epoch": int(epoch),
+                        },
+                    },
+                    checkpoint_path,
+                )
                 shutil.copy(checkpoint_path, checkpoint_dir / "latest-checkpoint.pt")
+
+    def load_training_state(self, checkpoint_path: Path) -> dict:
+        """Restore optimizer/scheduler state after this FSDP instance is initialized."""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        training_state = checkpoint.get("training_state")
+        if not training_state:
+            raise RuntimeError(
+                f"Checkpoint `{checkpoint_path}` has no training_state; it is model-only and cannot be resumed exactly."
+            )
+
+        optimizer_state_dict = training_state.get("optimizer")
+        if optimizer_state_dict is not None:
+            optimizer_state_dict = FSDP.optim_state_dict_to_load(
+                self.vlm, self.optimizer, optimizer_state_dict
+            )
+            self.optimizer.load_state_dict(optimizer_state_dict)
+        if self.lr_scheduler is not None and training_state.get("lr_scheduler") is not None:
+            self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
+
+        return {
+            "global_step": int(training_state.get("global_step", 0)),
+            "epoch": int(training_state.get("epoch", 0)),
+        }
 
     def run_setup(self, run_dir: Path, n_train_examples: int) -> None:
         # Iteratively Assemble FSDP Wrapping Policy by fetching the wrapping policies for each backbone/constituent

@@ -76,10 +76,20 @@ class PrismaticVLM(VLM):
             raise ValueError("flow_gr00t_placeholder_tokens must be positive.")
         self.lambda_visual_token_cosine = kwargs.get("lambda_visual_token_cosine", 0.5)
         jepa_dim = kwargs.get("d_jepa", vision_backbone.embed_dim)
+        ttt_memory_source = kwargs.get("ttt_memory_source", "jepa")
+        ttt_architecture = kwargs.get("ttt_architecture", "wrapper")
         ttt_memory_dim = kwargs.get("ttt_memory_dim") or jepa_dim
-        if kwargs.get("ttt_enabled", False) and ttt_memory_dim != jepa_dim:
+        if ttt_memory_source == "action_tokens":
+            # Action-token TTT uses the DiT width internally; no JEPA
+            # representation dimension is involved in this route.
+            ttt_memory_dim = None
+        if (
+            kwargs.get("ttt_enabled", False)
+            and ttt_memory_source == "jepa"
+            and ttt_memory_dim != jepa_dim
+        ):
             raise ValueError(
-                "ttt_memory_dim must equal d_jepa: TTT memory is required to remain in native V-JEPA space."
+                "ttt_memory_dim must equal d_jepa: TTT memory must remain in the selected vision-encoder space."
             )
         self.action_head = FlowMatchingActionHead(
             d_proprio=kwargs.get("d_proprio", PROPRIO_DIM),
@@ -98,6 +108,8 @@ class PrismaticVLM(VLM):
             fm_max_seq_len=kwargs.get("fm_max_seq_len", 1024),
             fm_state_dropout=kwargs.get("fm_state_dropout", 0.5),
             ttt_enabled=kwargs.get("ttt_enabled", False),
+            ttt_memory_source=ttt_memory_source,
+            ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=kwargs.get("ttt_num_register_tokens", 16),
             ttt_layer_indices=kwargs.get("ttt_layer_indices") or None,
             ttt_memory_hidden_dim=kwargs.get("ttt_memory_hidden_dim"),
@@ -203,18 +215,20 @@ class PrismaticVLM(VLM):
         self,
         *,
         train_qwen_lora: bool = True,
+        train_projector: bool = False,
         train_action_head: bool = True,
+        train_ttt_only: bool = False,
         train_visual_token_cosine_head: bool = True,
     ) -> None:
         """Freeze the fixed base and select which JEPA-WAM modules to train.
 
-        The vision encoder and projector remain frozen by design.  Qwen's
+        The vision encoder is always frozen. The projector can be trained when
+        a replacement vision encoder needs a new visual-to-Qwen bridge. Qwen's
         non-LoRA weights are always frozen; ``train_qwen_lora`` controls only
-        the LoRA adapters.  This makes action-expert-only fine-tuning explicit
-        instead of relying on incidental parameter names.
+        the LoRA adapters.
         """
         self.vision_backbone.requires_grad_(False)
-        self.projector.requires_grad_(False)
+        self.projector.requires_grad_(train_projector)
         self.llm_backbone.requires_grad_(False)
 
         lora_param_names = []
@@ -225,12 +239,28 @@ class PrismaticVLM(VLM):
         if train_qwen_lora and not lora_param_names:
             raise RuntimeError("Qwen must be wrapped with LoRA before calling `freeze_for_training`.")
 
-        self.action_head.requires_grad_(train_action_head)
+        if train_ttt_only:
+            if not self.action_head.ttt_enabled:
+                raise ValueError("train_ttt_only=True requires ttt_enabled=True.")
+            self.action_head.requires_grad_(False)
+            ttt_modules = [
+                block.ttt_wrapper if block.ttt_wrapper is not None else block.ttt_layer
+                for block in self.action_head.model.transformer_blocks
+                if block.ttt_wrapper is not None or block.ttt_layer is not None
+            ]
+            if not ttt_modules:
+                raise ValueError("train_ttt_only=True but no TTT layers were constructed.")
+            for ttt_module in ttt_modules:
+                ttt_module.requires_grad_(True)
+        else:
+            self.action_head.requires_grad_(train_action_head)
         self.visual_token_cosine_head.requires_grad_(train_visual_token_cosine_head)
         self.trainable_module_keys = []
         if train_qwen_lora:
             self.trainable_module_keys.append("llm_backbone")
-        if train_action_head:
+        if train_projector:
+            self.trainable_module_keys.append("projector")
+        if train_action_head or train_ttt_only:
             self.trainable_module_keys.append("action_head")
         if train_visual_token_cosine_head:
             self.trainable_module_keys.append("visual_token_cosine_head")
@@ -239,7 +269,10 @@ class PrismaticVLM(VLM):
         self.vision_backbone_requires_grad = False
 
         overwatch.info(f"[Frozen] =>> Vision Backbone `{self.vision_backbone.identifier}`", ctx_level=1)
-        overwatch.info(f"[Frozen] =>> Projector `{self.arch_specifier}`", ctx_level=1)
+        if train_projector:
+            overwatch.info(f"[TRAINABLE] =>> Projector `{self.arch_specifier}`", ctx_level=1)
+        else:
+            overwatch.info(f"[Frozen] =>> Projector `{self.arch_specifier}`", ctx_level=1)
         if train_qwen_lora:
             overwatch.info(
                 f"[TRAINABLE] =>> Qwen LoRA (`{len(lora_param_names)}` parameter groups matched)",
@@ -247,7 +280,12 @@ class PrismaticVLM(VLM):
             )
         else:
             overwatch.info("[Frozen] =>> Qwen (including LoRA)", ctx_level=1)
-        if train_action_head:
+        if train_ttt_only:
+            overwatch.info(
+                "[TRAINABLE] =>> TTT layers only; pretrained Flow-GR00T Action Head is frozen",
+                ctx_level=1,
+            )
+        elif train_action_head:
             overwatch.info(
                 f"[TRAINABLE] =>> Flow-GR00T Action Head (placeholders={self.action_placeholder_tokens})",
                 ctx_level=1,
@@ -336,6 +374,7 @@ class PrismaticVLM(VLM):
         actions: Optional[torch.FloatTensor] = None,
         proprio: Optional[torch.FloatTensor] = None,
         time_valid_mask: Optional[torch.Tensor] = None,
+        action_valid_mask: Optional[torch.Tensor] = None,
         prev_fast_weights=None,
         return_fast_weights: bool = False,
     ) -> dict:
@@ -375,14 +414,27 @@ class PrismaticVLM(VLM):
         if memory_stats is not None and (snap := _maybe_cuda_mem_snapshot("after_vision_encode")) is not None:
             memory_stats.append(snap)
 
-        pair_vjepa_target = None
+        pair_vision_target = None
         if model_pair_pixel_values is not None:
             if not hasattr(self.vision_backbone, "encode_pair"):
                 raise TypeError("The configured vision backbone does not implement paired-frame encoding.")
             with torch.no_grad():
-                pair_vjepa_target = self.vision_backbone.encode_pair(model_pair_pixel_values)
+                pair_vision_target = self.vision_backbone.encode_pair(model_pair_pixel_values)
 
+        # V-JEPA is intentionally kept in BF16 for inference, while the
+        # released VLM projector is restored in FP32.  Align the feature
+        # dtype with the projector before its Linear layers; otherwise
+        # inference fails with a BF16/FP32 matmul mismatch outside autocast.
+        projector_dtype = next(self.projector.parameters()).dtype
+        if patch_features.dtype != projector_dtype:
+            patch_features = patch_features.to(dtype=projector_dtype)
         projected_patch_embeddings = self.projector(patch_features)
+        # The Qwen backbone may be restored in BF16 for inference while the
+        # projector itself is kept in FP32.  Cast the projected tokens to the
+        # LLM parameter dtype before concatenating them with token embeddings.
+        llm_dtype = next(self.llm_backbone.parameters()).dtype
+        if projected_patch_embeddings.dtype != llm_dtype:
+            projected_patch_embeddings = projected_patch_embeddings.to(dtype=llm_dtype)
         if memory_stats is not None and (snap := _maybe_cuda_mem_snapshot("after_projector")) is not None:
             memory_stats.append(snap)
 
@@ -462,12 +514,14 @@ class PrismaticVLM(VLM):
         # JEPA representation and used exclusively as TTT memory.
         vl_condition = action_memory
 
-        # This is the WAM prediction (Y_hat) in V-JEPA space.  It is computed from
+        # This is the WAM prediction (Y_hat) in the selected vision-encoder space.  It is computed from
         # the current observation and is therefore available at deployment.
-        # The paired V-JEPA target (Y) below remains stop-gradient supervision
+        # The paired vision target (Y) below remains stop-gradient supervision
         # only; it is never used as TTT memory.
         wam_representation = None
-        if self.action_head.ttt_enabled or (pair_vjepa_target is not None and self.training):
+        if (
+            self.action_head.ttt_enabled and self.action_head.ttt_memory_source == "jepa"
+        ) or (pair_vision_target is not None and self.training):
             # Cosine supervision leaves the prediction scale unconstrained;
             # normalize before writing it into fast weights for stable TTT
             # updates while preserving its V-JEPA direction.
@@ -494,6 +548,8 @@ class PrismaticVLM(VLM):
         if actions is not None:
             if not temporal and actions.ndim == 4 and actions.shape[1] == 1:
                 actions = actions.squeeze(1)
+                if action_valid_mask is not None and action_valid_mask.ndim == 3:
+                    action_valid_mask = action_valid_mask.squeeze(1)
             if actions.ndim == 2:
                 actions = actions.unsqueeze(1)
             if not temporal and proprio.ndim == 3 and proprio.shape[1] == 1:
@@ -513,10 +569,15 @@ class PrismaticVLM(VLM):
                     wam_representation.reshape(
                         batch, time_steps, wam_representation.shape[1], wam_representation.shape[2]
                     )
-                    if temporal and wam_representation is not None
-                    else wam_representation
+                    if self.action_head.ttt_memory_source == "jepa" and temporal and wam_representation is not None
+                    else (
+                        wam_representation
+                        if self.action_head.ttt_memory_source == "jepa" and not temporal
+                        else None
+                    )
                 ),
                 time_valid_mask=time_valid_mask,
+                action_valid_mask=action_valid_mask,
                 prev_fast_weights=prev_fast_weights,
                 return_fast_weights=return_fast_weights,
             )
@@ -526,15 +587,15 @@ class PrismaticVLM(VLM):
                 loss_action, _ = action_result
             total_loss = total_loss + loss_action
 
-        if pair_vjepa_target is not None and self.training:
+        if pair_vision_target is not None and self.training:
             if wam_representation is None:
-                raise RuntimeError("WAM visual prediction is required for the V-JEPA alignment loss.")
-            if pair_vjepa_target.shape[2] != 1:
+                raise RuntimeError("WAM visual prediction is required for the visual-encoder alignment loss.")
+            if pair_vision_target.shape[2] != 1:
                 raise ValueError(
                     "Visual-token cosine supervision expects one temporal target token, "
-                    f"got {tuple(pair_vjepa_target.shape)}."
+                    f"got {tuple(pair_vision_target.shape)}."
                 )
-            target_grid = pair_vjepa_target.squeeze(2)
+            target_grid = pair_vision_target.squeeze(2)
             target_visual_tokens = target_grid.reshape(
                 target_grid.shape[0],
                 target_grid.shape[1] * target_grid.shape[2] * target_grid.shape[3],

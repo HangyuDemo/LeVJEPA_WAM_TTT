@@ -26,6 +26,7 @@ def get_vla_dataset_and_collator(
     target_proprio_dim: int = 8,
     temporal_context_length: int = 1,
     flow_gr00t_placeholder_tokens: int = NUM_TOKENS,
+    require_full_context: bool = False,
 ) -> Tuple[Dataset, PaddedCollatorForActionPrediction]:
     if flow_gr00t_placeholder_tokens < 1:
         raise ValueError("flow_gr00t_placeholder_tokens must be positive.")
@@ -51,6 +52,7 @@ def get_vla_dataset_and_collator(
         data_mix,
         batch_transform,
         resize_resolution=default_image_resolution[1:],
+        require_full_context=require_full_context,
         shuffle_buffer_size=shuffle_buffer_size,
         visual_token_pair_offset=visual_token_pair_offset,
         temporal_context_length=temporal_context_length,

@@ -19,6 +19,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from prismatic.models.vlms import PrismaticVLM
 from prismatic.overwatch import initialize_overwatch
 from prismatic.training.metrics import VLAMetrics
+from prismatic.training.temporal import backward_temporal_segments
 from prismatic.util import check_bloat16_supported
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 
@@ -284,6 +285,14 @@ class TrainingStrategy(ABC):
         """Run the VLA training loop for the given `dataset` and `collator`; log losses, action metrics to `metrics`."""
         assert isinstance(vla_dataset, IterableDataset), "VLA training expects an IterableDataset!"
 
+        if metrics.global_step >= self.max_steps:
+            overwatch.info(
+                "Checkpoint is already at global step %d (max_steps=%d); nothing to do.",
+                metrics.global_step,
+                self.max_steps,
+            )
+            return
+
         dataloader_num_workers = getattr(vla_dataset, "dataloader_num_workers", 0)
         dataloader_kwargs = {
             "dataset": vla_dataset,
@@ -337,19 +346,36 @@ class TrainingStrategy(ABC):
                     overwatch.info("First training batch shapes: %s", " | ".join(shape_lines))
                 self._printed_batch_shapes = True
 
-            with torch.autocast(
-                "cuda", dtype=self.mixed_precision_dtype, enabled=self.enable_mixed_precision_training
-            ):
-                output = self.vlm(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    pixel_values=batch["pixel_values"],
-                    pair_pixel_values=batch.get("pair_pixel_values"),
-                    actions=batch.get("actions"),
-                    proprio=batch.get("proprio"),
-                    time_valid_mask=batch.get("time_valid_mask"),
+            def autocast_context():
+                return torch.autocast(
+                    "cuda", dtype=self.mixed_precision_dtype, enabled=self.enable_mixed_precision_training
                 )
-                loss = output["loss"]
+
+            segment_size = getattr(self, "ttt_segment_size", None)
+            if getattr(self, "ttt_require_full_context", False):
+                if batch.get("time_valid_mask") is None or not bool(batch["time_valid_mask"].all()):
+                    raise ValueError("Full-context training received a padded observation window.")
+            if segment_size is not None:
+                output = backward_temporal_segments(
+                    self.vlm, batch, segment_size, accum_divisor,
+                    move_to_device=self._move_batch_to_device,
+                    autocast_context=autocast_context,
+                )
+            else:
+                batch = self._move_batch_to_device(batch)
+                with autocast_context():
+                    output = self.vlm(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        pixel_values=batch["pixel_values"],
+                        pair_pixel_values=batch.get("pair_pixel_values"),
+                        actions=batch.get("actions"),
+                        proprio=batch.get("proprio"),
+                        time_valid_mask=batch.get("time_valid_mask"),
+                        action_valid_mask=batch.get("action_valid_mask"),
+                    )
+                (output["loss"] / accum_divisor).backward()
+            loss = output["loss"].detach()
 
             if should_log_memory and overwatch.is_rank_zero():
                 self._log_cuda_mem_snapshot("after_forward", metrics.global_step)
@@ -362,7 +388,6 @@ class TrainingStrategy(ABC):
                         )
 
             metrics.commit(loss=loss)
-            (loss / accum_divisor).backward()
             if "loss_action" in output:
                 metrics.commit(loss_action=output["loss_action"])
             if "loss_visual_token_cosine" in output:
@@ -383,6 +408,11 @@ class TrainingStrategy(ABC):
                 self._log_cuda_mem_snapshot("after_optimizer_step", metrics.global_step + 1)
 
             metrics.commit(global_step=metrics.global_step + 1, epoch=epoch_value, lr=self.lr_scheduler.get_last_lr()[0])
+            if getattr(self, "ttt_require_full_context", False):
+                metrics.set_system_metrics(**{
+                    "Training/Valid Observations": metrics.global_step * self.global_batch_size * batch["actions"].shape[1],
+                    "Training/Sequences": metrics.global_step * self.global_batch_size,
+                })
             should_log_cpu_memory = self.cpu_memory_log_interval > 0 and (
                 metrics.global_step == 1 or metrics.global_step % self.cpu_memory_log_interval == 0
             )
@@ -422,7 +452,6 @@ class TrainingStrategy(ABC):
             global_dataset_length = getattr(vla_dataset, "global_dataset_length", len(vla_dataset))
             epoch_denominator = max(1, math.ceil(global_dataset_length / self.global_batch_size))
             for train_idx, batch in enumerate(dataloader):
-                batch = self._move_batch_to_device(batch)
                 grad_step_ready = ((train_idx + 1) % self.grad_accumulation_steps) == 0
                 epoch_value = (metrics.global_step + 1) // epoch_denominator
                 if process_batch(

@@ -21,6 +21,12 @@ class VisualTokenCosineHead(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def align_dimension(self, llm_embedding: torch.Tensor) -> torch.Tensor:
+        # The deployed V-JEPA/Qwen path can produce BF16 hidden states while
+        # this checkpoint head is restored in FP32.  Match the input to the
+        # head parameters before its Linear layers.
+        head_dtype = next(self.parameters()).dtype
+        if llm_embedding.dtype != head_dtype:
+            llm_embedding = llm_embedding.to(dtype=head_dtype)
         return self.fc2(self.act_fn1(self.fc1(llm_embedding)))
 
     @staticmethod

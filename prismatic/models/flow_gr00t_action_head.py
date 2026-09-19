@@ -8,7 +8,8 @@ from torch.distributions import Beta
 from transformers import PretrainedConfig
 
 from prismatic.models.flow_matching_head.action_encoder import ActionEncoder
-from prismatic.models.flow_matching_head.cross_attention_dit import DiT
+from prismatic.models.flow_matching_head.cross_attention_dit import DiT, TemporalTTTLayer
+from prismatic.util.action_loss import masked_action_mse
 
 
 class MLP(nn.Module):
@@ -37,8 +38,12 @@ class FlowMatchingActionHeadConfig(PretrainedConfig):
     num_inference_timesteps: int = field(default=4)
     num_target_vision_tokens: int = field(default=32)
     ttt_enabled: bool = field(default=False)
+    ttt_memory_source: str = field(default="jepa")
+    ttt_architecture: str = field(default="wrapper")
     ttt_num_register_tokens: int = field(default=16)
-    ttt_layer_indices: tuple[int, ...] = field(default_factory=tuple)
+    # Empty means architecture-specific defaults: all blocks for ``inline``
+    # and fixed RoboTTT-style blocks for ``wrapper``.
+    ttt_layer_indices: tuple[int, ...] = field(default=())
     ttt_memory_hidden_dim: int | None = field(default=None)
     ttt_memory_dim: int | None = field(default=None)
     ttt_tbptt_step_size: int | None = field(default=None)
@@ -77,6 +82,8 @@ class FlowMatchingActionHead(nn.Module):
         fm_max_seq_len: int = 1024,
         fm_state_dropout: float = 0.5,
         ttt_enabled: bool = False,
+        ttt_memory_source: str = "jepa",
+        ttt_architecture: str = "wrapper",
         ttt_num_register_tokens: int = 16,
         ttt_layer_indices: Optional[Sequence[int]] = None,
         ttt_memory_hidden_dim: int | None = None,
@@ -117,9 +124,26 @@ class FlowMatchingActionHead(nn.Module):
             raise ValueError("ttt_memory_hidden_dim must be positive when provided.")
         if ttt_tbptt_step_size is not None and ttt_tbptt_step_size < 1:
             raise ValueError("ttt_tbptt_step_size must be positive or None.")
+        if ttt_memory_source not in {"jepa", "action_tokens"}:
+            raise ValueError(
+                "ttt_memory_source must be either 'jepa' or 'action_tokens', "
+                f"got {ttt_memory_source!r}."
+            )
+        if ttt_architecture not in {"inline", "wrapper"}:
+            raise ValueError(
+                "ttt_architecture must be either 'inline' or 'wrapper', "
+                f"got {ttt_architecture!r}."
+            )
 
         action_model_cfg = {"input_embedding_dim": 1536, "attention_head_dim": 48, "num_attention_heads": 32}
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
+        self.ttt_memory_source = ttt_memory_source
+        self.ttt_architecture = ttt_architecture
+        # The explicit JEPA route uses the frozen visual representation as
+        # K/V.  The action-token route uses the DiT token width for K/V.
+        resolved_ttt_memory_dim = (
+            self.input_embedding_dim if ttt_memory_source == "action_tokens" else (ttt_memory_dim or self.input_embedding_dim)
+        )
         # Put the TTT layers inside the DiT blocks.  This matches RoboTTT's
         # placement: self/cross attention first mixes the current-step tokens,
         # then TTT reads/writes the cross-time state, and the block FFN follows.
@@ -136,15 +160,19 @@ class FlowMatchingActionHead(nn.Module):
             "num_layers": fm_num_layers,
             "output_dim": fm_hidden_size,
             "positional_embeddings": None,
+            # In the action-token route TTT is still present in every DiT
+            # block.  ``ttt_memory_source`` only changes where K/V come from.
             "ttt_enabled": ttt_enabled,
-            # ``None`` lets DiT select all blocks when TTT is enabled.  A
-            # non-empty tuple selects only the requested blocks.
+            "ttt_memory_source": ttt_memory_source,
+            "ttt_architecture": ttt_architecture,
+            # A non-empty tuple selects the fixed RoboTTT wrapper insertion
+            # points.  If omitted, DiT uses its fixed default indices.
             "ttt_layer_indices": resolved_ttt_layer_indices,
             # TTT K/V stay in the native WAM/V-JEPA representation space;
             # this must be passed to DiT so its per-block memory MLP is built
             # with the same width as ``memory_tokens``.
             "ttt_memory_hidden_dim": ttt_memory_hidden_dim,
-            "ttt_memory_dim": ttt_memory_dim,
+            "ttt_memory_dim": resolved_ttt_memory_dim,
             "ttt_tbptt_step_size": ttt_tbptt_step_size,
         }
 
@@ -163,10 +191,12 @@ class FlowMatchingActionHead(nn.Module):
             num_inference_timesteps=fm_num_inference_timesteps,
             num_target_vision_tokens=fm_num_target_vision_tokens,
             ttt_enabled=ttt_enabled,
+            ttt_memory_source=ttt_memory_source,
+            ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=ttt_num_register_tokens,
             ttt_layer_indices=resolved_ttt_layer_indices or tuple(),
             ttt_memory_hidden_dim=ttt_memory_hidden_dim,
-            ttt_memory_dim=ttt_memory_dim,
+            ttt_memory_dim=resolved_ttt_memory_dim,
             ttt_tbptt_step_size=ttt_tbptt_step_size,
         )
         self.config = config
@@ -178,6 +208,8 @@ class FlowMatchingActionHead(nn.Module):
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
         self.ttt_enabled = ttt_enabled
+        self.ttt_memory_source = ttt_memory_source
+        self.ttt_architecture = ttt_architecture
         self.ttt_tbptt_step_size = ttt_tbptt_step_size
 
         self.state_encoder = MLP(
@@ -197,8 +229,10 @@ class FlowMatchingActionHead(nn.Module):
         )
         self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
         nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
+        # RoboTTT wrappers do not add a new register-token stream.  Keep the
+        # register tokens only for the legacy inline route.
         self.register_tokens = None
-        if self.ttt_enabled:
+        if self.ttt_enabled and self.ttt_architecture == "inline":
             if ttt_num_register_tokens < 1:
                 raise ValueError("TTT requires at least one register token.")
             self.register_tokens = nn.Embedding(ttt_num_register_tokens, self.input_embedding_dim)
@@ -275,14 +309,23 @@ class FlowMatchingActionHead(nn.Module):
             else:
                 flat_memory_tokens = None
 
-        if self.ttt_enabled and flat_memory_tokens is None:
+        if self.ttt_enabled and self.ttt_memory_source == "jepa" and flat_memory_tokens is None:
             raise ValueError("TTT-enabled JEPA-WAM action prediction requires predicted JEPA memory_tokens.")
+        if self.ttt_memory_source == "action_tokens":
+            # This route deliberately does not pass JEPA/WAM representations
+            # into TTT.  Each DiT block will use its own action-token stream
+            # as the self-supervised K/V sequence.
+            flat_memory_tokens = None
 
         device = vl_embs.device
         flat_timesteps = flat_timesteps.to(device=device)
         if time_valid_mask is not None:
             time_valid_mask = time_valid_mask.to(device=device)
-        compute_dtype = vl_embs.dtype
+        # In evaluation the Qwen conditioning can be BF16 while the frozen
+        # action expert is restored in FP32.  Use the action-expert parameter
+        # dtype consistently for every input entering its Linear/DiT stack.
+        compute_dtype = next(self.action_encoder.parameters()).dtype
+        flat_vl_embs = flat_vl_embs.to(dtype=compute_dtype)
         flat_actions = flat_actions.to(dtype=compute_dtype)
         flat_state = flat_state.to(dtype=compute_dtype)
         if flat_memory_tokens is not None:
@@ -316,6 +359,8 @@ class FlowMatchingActionHead(nn.Module):
             update_fast_weights=update_fast_weights,
             time_valid_mask=time_valid_mask,
             tbptt_step_size=self.ttt_tbptt_step_size,
+            ttt_memory_source=self.ttt_memory_source,
+            ttt_action_token_count=flat_actions.shape[1],
         )
         if return_fast_weights:
             model_output, next_fast_weights = model_result
@@ -337,6 +382,7 @@ class FlowMatchingActionHead(nn.Module):
         action_gt: torch.Tensor,
         memory_tokens: Optional[torch.Tensor] = None,
         time_valid_mask: Optional[torch.Tensor] = None,
+        action_valid_mask: Optional[torch.Tensor] = None,
         prev_fast_weights=None,
         return_fast_weights: bool = False,
         **_: object,
@@ -374,16 +420,7 @@ class FlowMatchingActionHead(nn.Module):
             # Keep the original call shape for backward compatibility with
             # external action-head subclasses and existing checkpoints.
             pred_actions = self._predict_velocity(vl_embs, noisy_trajectory, t_discretized, state)
-        squared_error = (pred_actions - velocity) ** 2
-        if time_valid_mask is None:
-            loss = squared_error.mean()
-        else:
-            if not temporal or tuple(time_valid_mask.shape) != tuple(action_gt.shape[:2]):
-                raise ValueError("Temporal action loss expects time_valid_mask with shape [B, T].")
-            mask = time_valid_mask.to(
-                device=squared_error.device, dtype=squared_error.dtype
-            ).unsqueeze(-1).unsqueeze(-1)
-            loss = (squared_error * mask).sum() / mask.expand_as(squared_error).sum().clamp_min(1)
+        loss = masked_action_mse(pred_actions, velocity, action_valid_mask, time_valid_mask)
         if return_fast_weights:
             return loss, pred_actions, next_fast_weights
         return loss, pred_actions
@@ -398,12 +435,18 @@ class FlowMatchingActionHead(nn.Module):
         prev_fast_weights=None,
         return_fast_weights: bool = False,
     ):
-        state = self._prepare_state(proprio).to(dtype=vl_embs.dtype)
+        # Keep inference inputs aligned with the action expert parameters.
+        # This is distinct from the Qwen/V-JEPA dtype used to produce vl_embs.
+        compute_dtype = next(self.action_encoder.parameters()).dtype
+        vl_embs = vl_embs.to(dtype=compute_dtype)
+        state = self._prepare_state(proprio).to(dtype=compute_dtype)
+        if memory_tokens is not None:
+            memory_tokens = memory_tokens.to(dtype=compute_dtype)
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
         actions = torch.randn(
             size=(batch_size, self.action_horizon, self.action_dim),
-            dtype=vl_embs.dtype,
+            dtype=compute_dtype,
             device=device,
         )
 
@@ -418,11 +461,10 @@ class FlowMatchingActionHead(nn.Module):
             t_discretized = int(t_cont * self.num_timestep_buckets)
             timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device, dtype=torch.long)
             if self.ttt_enabled:
-                # One physical observation should create one TTT update.
-                # The remaining flow-matching evaluations refine the same
-                # action chunk and must only read the state written at the
-                # first denoising step; otherwise one observation would be
-                # counted as ``num_inference_timesteps`` environment steps.
+                # Experimental mode: every flow-matching denoising evaluation
+                # updates the TTT fast weights.  With the default four flow
+                # steps, one physical observation therefore performs four
+                # consecutive inner-loop updates.
                 pred_velocity, next_fast_weights = self._predict_velocity(
                     vl_embs,
                     actions,
@@ -431,7 +473,7 @@ class FlowMatchingActionHead(nn.Module):
                     memory_tokens=memory_tokens,
                     prev_fast_weights=next_fast_weights,
                     return_fast_weights=True,
-                    update_fast_weights=(t == 0),
+                    update_fast_weights=True,
                 )
             else:
                 pred_velocity = self._predict_velocity(vl_embs, actions, timesteps_tensor, state)

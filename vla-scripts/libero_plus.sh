@@ -31,11 +31,19 @@ fi
 
 : "${BASE_VLM_RUN:?Set BASE_VLM_RUN to the downloaded pretrained VLM run directory}"
 : "${QWEN_PATH:?Set QWEN_PATH to the downloaded Qwen2.5-0.5B directory}"
-: "${VJEPA_CKPT:?Set VJEPA_CKPT to the downloaded V-JEPA 2.1 ViT-L checkpoint}"
+VJEPA_CKPT="${VJEPA_CKPT:-}"
+LEVJEPA_CKPT="${LEVJEPA_CKPT:-}"
+if [[ -z "${VJEPA_CKPT}" && -z "${LEVJEPA_CKPT}" ]]; then
+    echo "Set VJEPA_CKPT or LEVJEPA_CKPT for evaluation." >&2
+    exit 1
+fi
 : "${LIBERO_PATH:?Set LIBERO_PATH to the LIBERO-Plus checkout}"
 MAX_TASKS="${MAX_TASKS:-0}"
 MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-0}"
+NUM_OPEN_LOOP_STEPS="${NUM_OPEN_LOOP_STEPS:-0}"
 SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-True}"
+RESULT_ROOT="${RESULT_ROOT:-}"
+RESUME="${RESUME:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -43,15 +51,26 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     exit 1
 fi
 
-for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QWEN_PATH}" "${VJEPA_CKPT}" "${LIBERO_PATH}"; do
+for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QWEN_PATH}" "${LIBERO_PATH}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
     fi
 done
 
+for vision_path in "${VJEPA_CKPT}" "${LEVJEPA_CKPT}"; do
+    if [[ -n "${vision_path}" && ! -e "${vision_path}" ]]; then
+        echo "Required vision checkpoint does not exist: ${vision_path}" >&2
+        exit 1
+    fi
+done
+
 case "${TASK_SUITE}" in
+    all)
+        SUITES=(libero_spatial libero_object libero_goal libero_10)
+        ;;
     libero_spatial|libero_object|libero_goal|libero_10|libero_90)
+        SUITES=("${TASK_SUITE}")
         ;;
     *)
         echo "Invalid task suite: ${TASK_SUITE}" >&2
@@ -94,30 +113,60 @@ mkdir -p "${MPLCONFIGDIR}"
 
 cd "${REPO_ROOT}"
 
-CMD=(
-    "${PYTHON_BIN}" experiments/robot/libero/run_libero_eval.py
-    --pretrained_checkpoint "${CHECKPOINT}"
-    --base_vlm "${BASE_VLM_RUN}"
-    --llm_checkpoint_path "${QWEN_PATH}"
-    --vjepa_checkpoint_path "${VJEPA_CKPT}"
-    --task_suite_name "${TASK_SUITE}"
-    --libero_plus_categories "${CATEGORIES}"
-    --num_trials_per_task "${TRIALS}"
-    --save_rollouts "${SAVE_ROLLOUTS}"
-)
+for suite in "${SUITES[@]}"; do
+    CMD=(
+        "${PYTHON_BIN}" experiments/robot/libero/run_libero_eval.py
+        --pretrained_checkpoint "${CHECKPOINT}"
+        --base_vlm "${BASE_VLM_RUN}"
+        --llm_checkpoint_path "${QWEN_PATH}"
+        --task_suite_name "${suite}"
+        --libero_plus_categories "${CATEGORIES}"
+        --num_trials_per_task "${TRIALS}"
+        --save_rollouts "${SAVE_ROLLOUTS}"
+    )
 
-if [[ "${MAX_TASKS}" -gt 0 ]]; then
-    CMD+=(--max_tasks "${MAX_TASKS}")
-fi
-if [[ "${MAX_EPISODE_STEPS}" -gt 0 ]]; then
-    CMD+=(--max_episode_steps "${MAX_EPISODE_STEPS}")
-fi
+    if [[ -n "${RESULT_ROOT}" ]]; then
+        CMD+=(--result_root "${RESULT_ROOT}")
+    fi
 
-if [[ "${DRY_RUN}" == "1" ]]; then
-    printf 'Command:'
-    printf ' %q' "${CMD[@]}"
-    printf '\n'
-    exit 0
-fi
+    if [[ -n "${VJEPA_CKPT}" ]]; then
+        CMD+=(--vjepa_checkpoint_path "${VJEPA_CKPT}")
+    fi
+    if [[ -n "${LEVJEPA_CKPT}" ]]; then
+        CMD+=(--levjepa_checkpoint_path "${LEVJEPA_CKPT}")
+    fi
 
-"${CMD[@]}"
+    if [[ "${MAX_TASKS}" -gt 0 ]]; then
+        CMD+=(--max_tasks "${MAX_TASKS}")
+    fi
+    if [[ "${MAX_EPISODE_STEPS}" -gt 0 ]]; then
+        CMD+=(--max_episode_steps "${MAX_EPISODE_STEPS}")
+    fi
+    if [[ "${NUM_OPEN_LOOP_STEPS}" -gt 0 ]]; then
+        CMD+=(--num_open_loop_steps "${NUM_OPEN_LOOP_STEPS}")
+    fi
+    if [[ "${RESUME}" == "1" ]]; then
+        RESUME_PATH=""
+        RESUME_SEARCH_ROOT="${RESULT_ROOT:-${REPO_ROOT}/rollout/${suite}}"
+        if [[ -d "${RESUME_SEARCH_ROOT}" ]]; then
+            RESUME_PATH="$(find "${RESUME_SEARCH_ROOT}" -type f -name 'summary-*.json' -printf '%T@ %p\n' \
+                | sort -nr \
+                | head -n 1 \
+                | cut -d' ' -f2-)"
+        fi
+        if [[ -n "${RESUME_PATH}" ]]; then
+            CMD+=(--resume_from "${RESUME_PATH}")
+        else
+            echo "No previous summary found for ${suite}; starting it from the beginning."
+        fi
+    fi
+
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        printf 'Command:'
+        printf ' %q' "${CMD[@]}"
+        printf '\n'
+    else
+        echo "Starting LIBERO-Plus suite: ${suite}"
+        "${CMD[@]}"
+    fi
+done

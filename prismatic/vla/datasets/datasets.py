@@ -179,6 +179,7 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 20_000,
         visual_token_pair_offset: int = 31,
         temporal_context_length: int = 1,
+        require_full_context: bool = False,
     ) -> None:
         if data_mix != "libero_4_task_suites_no_noops":
             raise ValueError("The public recipe only supports `libero_4_task_suites_no_noops`.")
@@ -212,6 +213,7 @@ class RLDSDataset(IterableDataset):
             shuffle_buffer_size=shuffle_buffer_size,
             sample_weights=weights,
             balance_weights=True,
+            require_full_context=require_full_context,
             traj_transform_threads=len(mixture_spec),
             traj_read_threads=len(mixture_spec),
         )

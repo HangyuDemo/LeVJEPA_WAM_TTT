@@ -4,15 +4,39 @@ The released JEPA-WAM checkpoint remains the default configuration.  RoboTTT
 is an opt-in temporal action-head variant and is not checkpoint-compatible with
 the released single-frame action head.
 
-## Placement
+## Two compatible architectures
 
-`TemporalTTTLayer` is instantiated inside the selected Flow-DiT blocks. Each
-block first performs its self/cross attention, then applies TTT, and finally
-runs its feed-forward network:
+The implementation exposes `ttt_architecture` so the previous inline design
+and the RoboTTT-style wrapper design can coexist:
 
 ```text
-attention -> TemporalTTTLayer -> feed-forward network
+inline:  every DiT block -> its own TTT layer -> next DiT operation
+wrapper: attention -> TTT wrapper only at blocks (3, 7, 11, 15) -> FFN
 ```
+
+With an empty `ttt_layer_indices` configuration, `inline` selects all DiT
+blocks, while `wrapper` selects only `(3, 7, 11, 15)`.  Explicit indices still
+override these defaults.  The two architectures use separate fast-weight
+state layouts: 16 states for the default 16-block inline path versus 4 states
+for the default wrapper path.
+
+Both architectures support `ttt_memory_source="jepa"` and
+`ttt_memory_source="action_tokens"`; only the memory source changes, not the
+parameter-freezing or temporal-state mechanism.
+
+## Placement
+
+`RoboTTTStyleActionWrapper` is attached only to the fixed Flow-DiT blocks
+`(3, 7, 11, 15)`. The wrapper receives the selected block output, selects only
+the action-token suffix, applies the fast-weight memory, and adds a near-zero
+gated residual. The base DiT computation remains unchanged:
+
+```text
+attention -> action-token TTT wrapper -> feed-forward network
+```
+
+Each selected wrapper owns one fast-weight state. Non-selected DiT blocks do
+not receive a TTT state slot and remain part of the pretrained action expert.
 
 V-JEPA, the visual projector, and Qwen are not changed. Each DiT block lets
 the action-token sequence query the Qwen action-placeholder states. TTT then
@@ -20,7 +44,7 @@ uses the post-attention DiT sequence for queries and the WAM prediction for
 memory writes:
 
 ```text
-query:           post-attention DiT hidden states
+query:           selected post-attention action-token states
 memory:          WAM(visual Qwen tokens) -> predicted V-JEPA representation (Ŷ)
 ```
 
@@ -66,8 +90,7 @@ actions, fast_weights = action_head.predict_action(
 )
 ```
 
-The first Flow-Matching denoising evaluation for an observation updates the
-current fast-weight state. Later evaluations refine the same action chunk and
-only read that state, so one observation advances memory once. Pass the
-returned `fast_weights` to the next observation and discard them at an episode
-reset.
+Every Flow-Matching denoising evaluation for an observation updates the current
+fast-weight state. With the default four flow steps, one observation advances
+the TTT state four times. Pass the returned `fast_weights` to the next
+observation and discard them at an episode reset.

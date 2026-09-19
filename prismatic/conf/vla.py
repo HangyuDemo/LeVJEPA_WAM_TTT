@@ -31,6 +31,9 @@ class VLAConfig(ChoiceRegistry):
     warmup_ratio: float = 0.03
 
     vjepa_checkpoint_path: Optional[str] = None
+    # Separate path for the opt-in LeVJEPA visual encoder. Keeping this
+    # distinct prevents a LeVJEPA run from accidentally loading V-JEPA 2.1.
+    levjepa_checkpoint_path: Optional[str] = None
     # Select the visual encoder while keeping the JEPA-WAM action/TTT stack
     # unchanged.  If unset, use the backbone recorded by the base VLM run.
     vision_backbone_id: Optional[str] = None
@@ -39,7 +42,13 @@ class VLAConfig(ChoiceRegistry):
     # frozen base VLM.  The default preserves the released recipe; disabling
     # Qwen LoRA and the visual head gives action-expert-only fine-tuning.
     train_qwen_lora: bool = True
+    # A replacement vision encoder needs a fresh bridge into Qwen space; the
+    # released projector was trained on V-JEPA features.
+    train_projector: bool = False
     train_action_head: bool = True
+    # RoboTTT-style pretraining: freeze the pretrained action head and update
+    # only the newly inserted TTT slow parameters.
+    train_ttt_only: bool = False
     train_visual_token_cosine_head: bool = True
 
     d_action: int = 7
@@ -61,14 +70,25 @@ class VLAConfig(ChoiceRegistry):
     # RoboTTT-style action-token fast-weight memory.  Disabled by default so
     # the released single-frame JEPA-WAM checkpoint remains load-compatible.
     ttt_enabled: bool = False
+    # ``jepa`` preserves the existing explicit WAM-representation K/V route;
+    # ``action_tokens`` makes each DiT TTT layer derive K/V from its own
+    # action-token stream.
+    ttt_memory_source: str = "jepa"
+    # ``inline`` is the original TTT-in-each-DiT-block implementation;
+    # ``wrapper`` is the RoboTTT-style selected-layer adapter.
+    ttt_architecture: str = "wrapper"
     ttt_context_length: int = 1
+    # Opt-in round-2 training: context is the TOTAL sequence length. Each
+    # forward/backward handles ttt_tbptt_step_size frames and carries state.
+    ttt_carry_between_segments: bool = False
+    ttt_require_full_context: bool = False
     ttt_num_register_tokens: int = 16
-    # Empty means all DiT blocks when TTT is enabled; a non-empty tuple selects
-    # specific DiT blocks (for example, (0, 4, 8, 12)).
+    # Empty means architecture-specific defaults: all DiT blocks for the
+    # legacy inline route, or (3, 7, 11, 15) for the RoboTTT wrapper route.
     ttt_layer_indices: Tuple[int, ...] = ()
     ttt_memory_hidden_dim: Optional[int] = None
     # Dimension of the representation written into TTT.  By default this is
-    # the frozen V-JEPA embedding dimension, not the DiT hidden dimension.
+    # the frozen visual-encoder embedding dimension, not the DiT hidden dimension.
     ttt_memory_dim: Optional[int] = None
     ttt_tbptt_step_size: Optional[int] = 8
 
@@ -130,12 +150,23 @@ class VLAConfig(ChoiceRegistry):
             raise ValueError("ttt_layer_indices must not contain duplicates.")
         if self.ttt_context_length < 1:
             raise ValueError("ttt_context_length must be positive.")
+        if self.ttt_memory_source not in {"jepa", "action_tokens"}:
+            raise ValueError("ttt_memory_source must be either 'jepa' or 'action_tokens'.")
+        if self.ttt_architecture not in {"inline", "wrapper"}:
+            raise ValueError("ttt_architecture must be either 'inline' or 'wrapper'.")
         if self.ttt_enabled and self.ttt_context_length < 2:
             raise ValueError("RoboTTT training requires ttt_context_length >= 2.")
         if self.ttt_num_register_tokens < 1:
             raise ValueError("ttt_num_register_tokens must be positive.")
         if self.ttt_tbptt_step_size is not None and self.ttt_tbptt_step_size < 1:
             raise ValueError("ttt_tbptt_step_size must be positive or None.")
+        if self.ttt_carry_between_segments:
+            if not self.ttt_enabled or not self.ttt_tbptt_step_size or self.ttt_tbptt_step_size < 2:
+                raise ValueError("Segmented TTT requires ttt_enabled and tbptt_step_size>=2.")
+            if self.ttt_context_length % self.ttt_tbptt_step_size:
+                raise ValueError("ttt_context_length must be divisible by ttt_tbptt_step_size.")
+            if self.visual_token_pair_offset != 0:
+                raise ValueError("Segmented action-only TTT requires visual_token_pair_offset=0.")
 
 
 Exp_JEPAVLA_Qwen25_VJEPA_0_5B_LIBERO_90 = VLAConfig

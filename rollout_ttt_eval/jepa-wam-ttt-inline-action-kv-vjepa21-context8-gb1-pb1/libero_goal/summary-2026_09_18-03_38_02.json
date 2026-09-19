@@ -1,0 +1,327 @@
+{
+  "status": "running",
+  "task_suite": "libero_goal",
+  "categories": "all",
+  "evaluated_tasks": 30,
+  "trials_per_task": 1,
+  "total_episodes": 30,
+  "successes": 30,
+  "success_rate": 1.0,
+  "log_file": "experiments/logs/libero-plus-libero_goal-2026_09_18-03_38_02.txt",
+  "rollout_directory": "/home/ha865618/project/LeVJEPA_WAM_TTT/rollout_ttt_eval/jepa-wam-ttt-inline-action-kv-vjepa21-context8-gb1-pb1/libero_goal",
+  "last_episode": {
+    "task_id": 29,
+    "task_name": "open_the_middle_drawer_of_the_cabinet_tb_9",
+    "task_description": "open the middle drawer of the cabinet tb 9",
+    "category": "Background Textures",
+    "difficulty": 4,
+    "episode_index": 0,
+    "success": true
+  },
+  "episode_results": [
+    {
+      "task_id": 0,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_1",
+      "task_description": "open the middle drawer of the cabinet table 1",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 1,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_10",
+      "task_description": "open the middle drawer of the cabinet table 10",
+      "category": "Background Textures",
+      "difficulty": 1,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 2,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_12",
+      "task_description": "open the middle drawer of the cabinet table 12",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 3,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_13",
+      "task_description": "open the middle drawer of the cabinet table 13",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 4,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_15",
+      "task_description": "open the middle drawer of the cabinet table 15",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 5,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_16",
+      "task_description": "open the middle drawer of the cabinet table 16",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 6,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_17",
+      "task_description": "open the middle drawer of the cabinet table 17",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 7,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_18",
+      "task_description": "open the middle drawer of the cabinet table 18",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 8,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_19",
+      "task_description": "open the middle drawer of the cabinet table 19",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 9,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_2",
+      "task_description": "open the middle drawer of the cabinet table 2",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 10,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_21",
+      "task_description": "open the middle drawer of the cabinet table 21",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 11,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_22",
+      "task_description": "open the middle drawer of the cabinet table 22",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 12,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_24",
+      "task_description": "open the middle drawer of the cabinet table 24",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 13,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_27",
+      "task_description": "open the middle drawer of the cabinet table 27",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 14,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_28",
+      "task_description": "open the middle drawer of the cabinet table 28",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 15,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_4",
+      "task_description": "open the middle drawer of the cabinet table 4",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 16,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_5",
+      "task_description": "open the middle drawer of the cabinet table 5",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 17,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_table_8",
+      "task_description": "open the middle drawer of the cabinet table 8",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 18,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_10",
+      "task_description": "open the middle drawer of the cabinet tb 10",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 19,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_12",
+      "task_description": "open the middle drawer of the cabinet tb 12",
+      "category": "Background Textures",
+      "difficulty": 2,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 20,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_18",
+      "task_description": "open the middle drawer of the cabinet tb 18",
+      "category": "Background Textures",
+      "difficulty": 5,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 21,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_2",
+      "task_description": "open the middle drawer of the cabinet tb 2",
+      "category": "Background Textures",
+      "difficulty": 1,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 22,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_20",
+      "task_description": "open the middle drawer of the cabinet tb 20",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 23,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_21",
+      "task_description": "open the middle drawer of the cabinet tb 21",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 24,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_22",
+      "task_description": "open the middle drawer of the cabinet tb 22",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 25,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_5",
+      "task_description": "open the middle drawer of the cabinet tb 5",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 26,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_6",
+      "task_description": "open the middle drawer of the cabinet tb 6",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 27,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_7",
+      "task_description": "open the middle drawer of the cabinet tb 7",
+      "category": "Background Textures",
+      "difficulty": 3,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 28,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_8",
+      "task_description": "open the middle drawer of the cabinet tb 8",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    },
+    {
+      "task_id": 29,
+      "task_name": "open_the_middle_drawer_of_the_cabinet_tb_9",
+      "task_description": "open the middle drawer of the cabinet tb 9",
+      "category": "Background Textures",
+      "difficulty": 4,
+      "episode_index": 0,
+      "success": true
+    }
+  ],
+  "category_results": {
+    "Background Textures": {
+      "successes": 30,
+      "episodes": 30,
+      "success_rate": 1.0
+    }
+  },
+  "difficulty_results": {
+    "3": {
+      "successes": 13,
+      "episodes": 13,
+      "success_rate": 1.0
+    },
+    "1": {
+      "successes": 2,
+      "episodes": 2,
+      "success_rate": 1.0
+    },
+    "2": {
+      "successes": 8,
+      "episodes": 8,
+      "success_rate": 1.0
+    },
+    "4": {
+      "successes": 6,
+      "episodes": 6,
+      "success_rate": 1.0
+    },
+    "5": {
+      "successes": 1,
+      "episodes": 1,
+      "success_rate": 1.0
+    }
+  }
+}

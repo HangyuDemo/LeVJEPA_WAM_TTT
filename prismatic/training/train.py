@@ -84,7 +84,12 @@ def build_vla_from_base_vlm(
     """
     Load the released base VLM checkpoint and attach the fixed JEPA-WAM heads.
     """
-    from prismatic.models.materialize import get_llm_backbone_and_tokenizer, get_vision_backbone_and_transform, get_vlm
+    from prismatic.models.materialize import (
+        LEVJEPA_VISION_BACKBONE_ID,
+        get_llm_backbone_and_tokenizer,
+        get_vision_backbone_and_transform,
+        get_vlm,
+    )
 
     base_vlm_path = Path(base_vlm_id_or_path)
     if base_vlm_path.is_dir():
@@ -116,11 +121,25 @@ def build_vla_from_base_vlm(
             f"Base VLM checkpoint `{checkpoint_path}` must contain `llm_backbone` and `projector` weights."
         )
 
-    vision_checkpoint_path = cfg.vla.vjepa_checkpoint_path or model_cfg.get("vision_checkpoint_path")
+    vision_backbone_id = cfg.vla.vision_backbone_id or model_cfg["vision_backbone_id"]
+    if vision_backbone_id == LEVJEPA_VISION_BACKBONE_ID:
+        vision_checkpoint_path = cfg.vla.levjepa_checkpoint_path or cfg.vla.vjepa_checkpoint_path
+        if not vision_checkpoint_path:
+            raise ValueError(
+                "LeVJEPA training requires `--vla.levjepa_checkpoint_path` or "
+                "`LEVJEPA_CHECKPOINT_PATH`."
+            )
+        if not cfg.vla.train_projector:
+            raise ValueError(
+                "LeVJEPA training requires `--vla.train_projector True`: "
+                "the released projector is aligned to V-JEPA features."
+            )
+    else:
+        vision_checkpoint_path = cfg.vla.vjepa_checkpoint_path or model_cfg.get("vision_checkpoint_path")
     llm_checkpoint_path = str(cfg.llm_checkpoint_path) if cfg.llm_checkpoint_path else model_cfg.get("llm_local_path")
 
     vision_backbone, _ = get_vision_backbone_and_transform(
-        cfg.vla.vision_backbone_id or model_cfg["vision_backbone_id"],
+        vision_backbone_id,
         model_cfg["image_resize_strategy"],
         checkpoint_path=vision_checkpoint_path,
     )
@@ -152,6 +171,8 @@ def build_vla_from_base_vlm(
         fm_max_seq_len=cfg.vla.fm_max_seq_len,
         fm_state_dropout=cfg.vla.fm_state_dropout,
         ttt_enabled=cfg.vla.ttt_enabled,
+        ttt_memory_source=cfg.vla.ttt_memory_source,
+        ttt_architecture=cfg.vla.ttt_architecture,
         ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
         ttt_layer_indices=cfg.vla.ttt_layer_indices,
         ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
@@ -162,11 +183,14 @@ def build_vla_from_base_vlm(
         d_jepa=vision_backbone.embed_dim,
     )
 
-    # The base run only provides pretrained projector + LLM weights.
-    # Vision weights should come from the explicit V-JEPA checkpoint path above,
-    # while VLA heads are newly initialized for Libero training.
+    # The base run provides the pretrained Qwen stack. Its projector is only
+    # reusable for the original V-JEPA backbone; LeVJEPA gets a fresh bridge
+    # that is trained with the JEPA-WAM objective below.
     vlm.llm_backbone.load_state_dict(model_state_dict["llm_backbone"])
-    vlm.projector.load_state_dict(model_state_dict["projector"])
+    if vision_backbone_id == LEVJEPA_VISION_BACKBONE_ID:
+        overwatch.info("LeVJEPA selected: using a freshly initialized trainable projector.")
+    else:
+        vlm.projector.load_state_dict(model_state_dict["projector"])
     # V-JEPA checkpoints can come in bf16; keep training initialization consistent
     # with the rest of the codepath by materializing the full train-time model in fp32.
     vlm = vlm.to(dtype=torch.float32)
@@ -229,6 +253,7 @@ class TrainConfig:
 
     # Optional JEPA-WAM weights used to initialize a new run.
     initial_checkpoint: Optional[Path] = None
+    resume: bool = False                                             # Resume optimizer/scheduler/global step
 
     # Custom Local Paths (for JEPA-VLA and local model checkpoints)
     llm_checkpoint_path: Optional[Path] = None                      # Local path to LLM (e.g., Qwen2.5-0.5B)
@@ -282,25 +307,51 @@ def train(cfg: TrainConfig) -> None:
     torch.cuda.set_device(device_id := overwatch.local_rank())
     torch.cuda.empty_cache()
 
-    # Configure Unique Run Name & Save Directory
+    # Configure a stable run directory for resume; fresh runs retain the timestamped naming scheme.
     vla_id = cfg.vla.vla_id
-    cfg.run_id = (
-        f"{vla_id}+n{cfg.vla.expected_world_size // 8}+b{cfg.per_device_batch_size}+x{cfg.seed}"
-        if cfg.run_id is None
-        else cfg.run_id
-    )
-    if cfg.run_id_note is not None:
-        cfg.run_id += f"--{cfg.run_id_note}"
-    from datetime import datetime
-    cfg.run_id += f"--{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if cfg.resume:
+        if cfg.run_id is None:
+            raise ValueError("`resume=True` requires an explicit `run_id` so the previous run can be located.")
+        run_dir = cfg.run_root_dir / cfg.run_id
+        if cfg.initial_checkpoint is None:
+            cfg.initial_checkpoint = run_dir / "checkpoints" / "latest-checkpoint.pt"
+        if not cfg.initial_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Resume checkpoint not found: `{cfg.initial_checkpoint}`. "
+                "Submit once without a checkpoint, then resubmit with the same run_id."
+            )
+        overwatch.info("Resuming run `%s` from `%s`", cfg.run_id, cfg.initial_checkpoint)
+        if cfg.vla.ttt_carry_between_segments:
+            previous_config_path = run_dir / "config.json"
+            if not previous_config_path.is_file():
+                raise ValueError("Round-2 resume requires the original run config.json.")
+            with previous_config_path.open() as handle:
+                previous_vla = json.load(handle)["vla"]
+            resume_keys = (
+                "ttt_carry_between_segments", "ttt_require_full_context", "ttt_context_length",
+                "ttt_tbptt_step_size", "ttt_architecture", "ttt_memory_source",
+                "global_batch_size", "per_device_batch_size", "max_steps", "learning_rate",
+            )
+            mismatched = [key for key in resume_keys if previous_vla.get(key) != getattr(cfg.vla, key)]
+            if mismatched:
+                raise ValueError(f"Resume would change the training recipe: {mismatched}. Use a new run_id.")
+    else:
+        if cfg.run_id is None:
+            cfg.run_id = f"{vla_id}+n{cfg.vla.expected_world_size // 8}+b{cfg.per_device_batch_size}+x{cfg.seed}"
+            if cfg.run_id_note is not None:
+                cfg.run_id += f"--{cfg.run_id_note}"
+            from datetime import datetime
+            cfg.run_id += f"--{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_dir = cfg.run_root_dir / cfg.run_id
+
     # Start =>> Build Directories and Set Randomness
     if isinstance(cfg.hf_token, Path):
         hf_token = cfg.hf_token.read_text().strip() if cfg.hf_token.exists() else None
     else:
         hf_token = os.environ.get(cfg.hf_token)
     worker_init_fn = set_global_seed(cfg.seed, get_worker_init_fn=True)
-    os.makedirs(run_dir := (cfg.run_root_dir / cfg.run_id), exist_ok=True)
-    os.makedirs(cfg.run_root_dir / cfg.run_id / "checkpoints", exist_ok=True)
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(run_dir / "checkpoints", exist_ok=True)
 
     # Save Configuration =>> additionally save a JSON version for later HF Integration
     if overwatch.is_rank_zero():
@@ -320,7 +371,10 @@ def train(cfg: TrainConfig) -> None:
             base_vlm=cfg.vla.base_vlm,
             llm_checkpoint_path=str(cfg.llm_checkpoint_path) if cfg.llm_checkpoint_path else None,
             vjepa_checkpoint_path=cfg.vla.vjepa_checkpoint_path,
+            levjepa_checkpoint_path=cfg.vla.levjepa_checkpoint_path,
             ttt_enabled=cfg.vla.ttt_enabled,
+            ttt_memory_source=cfg.vla.ttt_memory_source,
+            ttt_architecture=cfg.vla.ttt_architecture,
             ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
             ttt_layer_indices=cfg.vla.ttt_layer_indices or None,
             ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
@@ -346,14 +400,17 @@ def train(cfg: TrainConfig) -> None:
         assert param.dtype == torch.float32, f"Loaded VLM parameter not in full precision: {param}"
 
     overwatch.info(
-        "Selecting trainable modules: qwen_lora=%s action_head=%s visual_token_cosine_head=%s",
+        "Selecting trainable modules: qwen_lora=%s projector=%s action_head=%s visual_token_cosine_head=%s",
         cfg.vla.train_qwen_lora,
+        cfg.vla.train_projector,
         cfg.vla.train_action_head,
         cfg.vla.train_visual_token_cosine_head,
     )
     vlm.freeze_for_training(
         train_qwen_lora=cfg.vla.train_qwen_lora,
+        train_projector=cfg.vla.train_projector,
         train_action_head=cfg.vla.train_action_head,
+        train_ttt_only=cfg.vla.train_ttt_only,
         train_visual_token_cosine_head=cfg.vla.train_visual_token_cosine_head,
     )
     vlm.debug_memory_stats = cfg.debug_memory_stats
@@ -381,6 +438,7 @@ def train(cfg: TrainConfig) -> None:
         target_proprio_dim=cfg.vla.d_proprio,
         flow_gr00t_placeholder_tokens=cfg.vla.flow_gr00t_placeholder_tokens,
         temporal_context_length=cfg.vla.ttt_context_length,
+        require_full_context=cfg.vla.ttt_require_full_context,
     )
 
     global_dataset_length = getattr(vla_dataset, "global_dataset_length", len(vla_dataset))
@@ -416,6 +474,15 @@ def train(cfg: TrainConfig) -> None:
     train_strategy.cpu_memory_log_interval = cfg.cpu_memory_log_interval
     train_strategy.run_setup(run_dir=run_dir, n_train_examples=global_dataset_length)
 
+    resume_state = None
+    if cfg.resume:
+        resume_state = train_strategy.load_training_state(cfg.initial_checkpoint)
+        overwatch.info(
+            "Restored optimizer/scheduler state at global step %d, epoch %d.",
+            resume_state["global_step"],
+            resume_state["epoch"],
+        )
+
     # Create Metrics =>> Handles JSONL and optional SwanLab tracking.
     overwatch.info(f"Creating Metrics with Active Trackers => `{cfg.trackers}`")
     metrics = VLAMetrics(
@@ -427,7 +494,14 @@ def train(cfg: TrainConfig) -> None:
         swanlab_entity=cfg.swanlab_entity,
         use_swanlab=cfg.use_swanlab,
     )
+    if resume_state is not None:
+        metrics.global_step = resume_state["global_step"]
+        metrics.epoch = resume_state["epoch"]
     train_strategy.debug_batch_shapes = cfg.debug_batch_shapes
+    train_strategy.ttt_segment_size = (
+        cfg.vla.ttt_tbptt_step_size if cfg.vla.ttt_carry_between_segments else None
+    )
+    train_strategy.ttt_require_full_context = cfg.vla.ttt_require_full_context
     train_strategy.debug_memory_stats = cfg.debug_memory_stats
     train_strategy.debug_memory_stats_interval = cfg.debug_memory_stats_interval
     # Run VLA Training

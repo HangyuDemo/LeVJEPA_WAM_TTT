@@ -105,14 +105,14 @@ class OpenVLA(PrismaticVLM):
                 raise RuntimeError("JEPA-WAM inference did not produce DiT VL conditioning tokens.")
             if self.action_head.ttt_enabled:
                 wam_memory = output.get("wam_representation")
-                if wam_memory is None:
+                if self.action_head.ttt_memory_source == "jepa" and wam_memory is None:
                     raise RuntimeError(
-                        "TTT-enabled JEPA-WAM inference did not produce a predicted JEPA representation."
+                        "JEPA-memory TTT inference did not produce a predicted JEPA representation."
                     )
                 normalized_actions, self._ttt_fast_weights = self.action_head.predict_action(
                     vl_condition,
                     normalized_proprio,
-                    memory_tokens=wam_memory,
+                    memory_tokens=wam_memory if self.action_head.ttt_memory_source == "jepa" else None,
                     prev_fast_weights=self._ttt_fast_weights,
                     return_fast_weights=True,
                 )
