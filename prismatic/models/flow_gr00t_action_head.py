@@ -41,6 +41,9 @@ class FlowMatchingActionHeadConfig(PretrainedConfig):
     ttt_memory_source: str = field(default="jepa")
     ttt_architecture: str = field(default="wrapper")
     ttt_num_register_tokens: int = field(default=16)
+    ttt_wrapper_register_tokens: bool = field(default=False)
+    ttt_token_scope: str = field(default="legacy")
+    ttt_action_kv_scope: str = field(default="query_tokens")
     # Empty means architecture-specific defaults: all blocks for ``inline``
     # and fixed RoboTTT-style blocks for ``wrapper``.
     ttt_layer_indices: tuple[int, ...] = field(default=())
@@ -59,7 +62,7 @@ class FlowMatchingActionHead(nn.Module):
     VLA-JEPA GR00T action head adapted to JEPA-WAM.
 
     The architecture is copied from VLA-JEPA; the main interface change is that
-    it consumes the Qwen visual/task conditioning sequence from Prismatic
+    it consumes the Qvv visual/task conditioning sequence from Prismatic
     instead of custom `<|embodied_action|>` tokenizer tokens.  The DiT action
     tokens query this sequence through cross-attention.
     """
@@ -85,6 +88,9 @@ class FlowMatchingActionHead(nn.Module):
         ttt_memory_source: str = "jepa",
         ttt_architecture: str = "wrapper",
         ttt_num_register_tokens: int = 16,
+        ttt_wrapper_register_tokens: bool = False,
+        ttt_token_scope: str = "legacy",
+        ttt_action_kv_scope: str = "query_tokens",
         ttt_layer_indices: Optional[Sequence[int]] = None,
         ttt_memory_hidden_dim: int | None = None,
         ttt_memory_dim: int | None = None,
@@ -135,12 +141,19 @@ class FlowMatchingActionHead(nn.Module):
                 f"got {ttt_architecture!r}."
             )
 
+        if ttt_token_scope not in {"legacy", "state_register_action"}:
+            raise ValueError(f"Unsupported TTT token scope: {ttt_token_scope!r}.")
+        if ttt_action_kv_scope not in {"query_tokens", "full_dit_tokens"}:
+            raise ValueError(f"Unsupported action K/V scope: {ttt_action_kv_scope!r}.")
+        self.ttt_token_scope = ttt_token_scope
+        self.ttt_action_kv_scope = ttt_action_kv_scope
+
         action_model_cfg = {"input_embedding_dim": 1536, "attention_head_dim": 48, "num_attention_heads": 32}
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
         self.ttt_memory_source = ttt_memory_source
         self.ttt_architecture = ttt_architecture
-        # The explicit JEPA route uses the frozen visual representation as
-        # K/V.  The action-token route uses the DiT token width for K/V.
+        # The explicit route uses the frozen JEPA representation as K/V. The
+        # implicit route uses the complete post-attention DiT stream at this width.
         resolved_ttt_memory_dim = (
             self.input_embedding_dim if ttt_memory_source == "action_tokens" else (ttt_memory_dim or self.input_embedding_dim)
         )
@@ -160,11 +173,21 @@ class FlowMatchingActionHead(nn.Module):
             "num_layers": fm_num_layers,
             "output_dim": fm_hidden_size,
             "positional_embeddings": None,
-            # In the action-token route TTT is still present in every DiT
-            # block.  ``ttt_memory_source`` only changes where K/V come from.
+            # Architecture/layer indices select the insertion points;
+            # memory_source selects K/V and token_scope selects input/residual.
             "ttt_enabled": ttt_enabled,
             "ttt_memory_source": ttt_memory_source,
             "ttt_architecture": ttt_architecture,
+            "ttt_token_scope": ttt_token_scope,
+            "ttt_action_kv_scope": ttt_action_kv_scope,
+            # Historical key name; unified scope uses this prefix in inline too.
+            "ttt_wrapper_prefix_token_count": (
+                1 + ttt_num_register_tokens
+                if ttt_enabled and (
+                    ttt_token_scope == "state_register_action"
+                    or (ttt_architecture == "wrapper" and ttt_wrapper_register_tokens)
+                ) else 0
+            ),
             # A non-empty tuple selects the fixed RoboTTT wrapper insertion
             # points.  If omitted, DiT uses its fixed default indices.
             "ttt_layer_indices": resolved_ttt_layer_indices,
@@ -194,6 +217,9 @@ class FlowMatchingActionHead(nn.Module):
             ttt_memory_source=ttt_memory_source,
             ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=ttt_num_register_tokens,
+            ttt_wrapper_register_tokens=ttt_wrapper_register_tokens,
+            ttt_token_scope=ttt_token_scope,
+            ttt_action_kv_scope=ttt_action_kv_scope,
             ttt_layer_indices=resolved_ttt_layer_indices or tuple(),
             ttt_memory_hidden_dim=ttt_memory_hidden_dim,
             ttt_memory_dim=resolved_ttt_memory_dim,
@@ -229,10 +255,13 @@ class FlowMatchingActionHead(nn.Module):
         )
         self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
         nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
-        # RoboTTT wrappers do not add a new register-token stream.  Keep the
-        # register tokens only for the legacy inline route.
+        # Explicit version flag preserves old wrapper checkpoints without registers.
+        self.ttt_wrapper_register_tokens = ttt_wrapper_register_tokens
         self.register_tokens = None
-        if self.ttt_enabled and self.ttt_architecture == "inline":
+        if self.ttt_enabled and (
+            self.ttt_architecture == "inline" or ttt_wrapper_register_tokens
+            or ttt_token_scope == "state_register_action"
+        ):
             if ttt_num_register_tokens < 1:
                 raise ValueError("TTT requires at least one register token.")
             self.register_tokens = nn.Embedding(ttt_num_register_tokens, self.input_embedding_dim)
@@ -313,15 +342,15 @@ class FlowMatchingActionHead(nn.Module):
             raise ValueError("TTT-enabled JEPA-WAM action prediction requires predicted JEPA memory_tokens.")
         if self.ttt_memory_source == "action_tokens":
             # This route deliberately does not pass JEPA/WAM representations
-            # into TTT.  Each DiT block will use its own action-token stream
-            # as the self-supervised K/V sequence.
+            # into TTT. Selected blocks derive K/V from their token stream:
+            # state/registers/actions in unified scope, legacy selection otherwise.
             flat_memory_tokens = None
 
         device = vl_embs.device
         flat_timesteps = flat_timesteps.to(device=device)
         if time_valid_mask is not None:
             time_valid_mask = time_valid_mask.to(device=device)
-        # In evaluation the Qwen conditioning can be BF16 while the frozen
+        # In evaluation the Qvv conditioning can be BF16 while the frozen
         # action expert is restored in FP32.  Use the action-expert parameter
         # dtype consistently for every input entering its Linear/DiT stack.
         compute_dtype = next(self.action_encoder.parameters()).dtype
@@ -436,7 +465,7 @@ class FlowMatchingActionHead(nn.Module):
         return_fast_weights: bool = False,
     ):
         # Keep inference inputs aligned with the action expert parameters.
-        # This is distinct from the Qwen/V-JEPA dtype used to produce vl_embs.
+        # This is distinct from the Qvv/V-JEPA dtype used to produce vl_embs.
         compute_dtype = next(self.action_encoder.parameters()).dtype
         vl_embs = vl_embs.to(dtype=compute_dtype)
         state = self._prepare_state(proprio).to(dtype=compute_dtype)

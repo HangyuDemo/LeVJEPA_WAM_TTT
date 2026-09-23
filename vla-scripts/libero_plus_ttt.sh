@@ -26,8 +26,8 @@ if [[ -z "${CHECKPOINT}" ]]; then
 fi
 
 PYTHON_BIN="${PYTHON_BIN:-/home/ha865618/.conda/envs/jepa_wam/bin/python}"
-BASE_VLM_RUN="${BASE_VLM_RUN:-${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7}"
-QWEN_PATH="${QWEN_PATH:-${ASSET_ROOT}/Qwen2.5-0.5B}"
+BASE_VLM_RUN="${BASE_VLM_RUN:-${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7}"
+QVV_PATH="${QVV_PATH:-${ASSET_ROOT}/Qvv2.5-0.5B}"
 VJEPA_CKPT="${VJEPA_CKPT:-${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt}"
 LIBERO_PATH="${LIBERO_PATH:-/home/ha865618/project/LIBERO-plus}"
 SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-False}"
@@ -47,14 +47,14 @@ LOCAL_LOG_DIR="${LOCAL_LOG_DIR:-${REPO_ROOT}/experiments/logs/ttt-${RUN_TAG}-${S
 RESULT_ROOT="${RESULT_ROOT:-${REPO_ROOT}/rollout_ttt/${RUN_TAG}-${STAMP}}"
 LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-${REPO_ROOT}/.libero_plus_config/ttt-${RUN_TAG}-${STAMP}}"
 
-for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QWEN_PATH}" "${VJEPA_CKPT}" "${LIBERO_PATH}"; do
+for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QVV_PATH}" "${VJEPA_CKPT}" "${LIBERO_PATH}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
     fi
 done
 
-export PYTHON_BIN BASE_VLM_RUN QWEN_PATH VJEPA_CKPT LIBERO_PATH
+export PYTHON_BIN BASE_VLM_RUN QVV_PATH VJEPA_CKPT LIBERO_PATH
 export SAVE_ROLLOUTS NUM_OPEN_LOOP_STEPS LOCAL_LOG_DIR RESULT_ROOT LIBERO_CONFIG_PATH
 
 printf '%s\n' '===== JEPA-WAM + TTT LIBERO-Plus EVALUATION ====='

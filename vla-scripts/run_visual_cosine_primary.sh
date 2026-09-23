@@ -14,7 +14,7 @@ mkdir -p "${LOG_DIR}"
 
 LOG_FILE="${LOG_DIR}/train_jepa_visual_cosine_primary_$(date +%Y%m%d_%H%M%S).log"
 : "${LIBERO_DATA:?Set LIBERO_DATA to the modified LIBERO RLDS dataset root}"
-: "${QWEN_PATH:?Set QWEN_PATH to the downloaded Qwen2.5-0.5B directory}"
+: "${QVV_PATH:?Set QVV_PATH to the downloaded Qvv2.5-0.5B directory}"
 : "${VJEPA_CKPT:?Set VJEPA_CKPT to the downloaded V-JEPA 2.1 ViT-L checkpoint}"
 : "${BASE_VLM_RUN:?Set BASE_VLM_RUN to the downloaded pretrained VLM run directory}"
 RUNS_DIR="${RUNS_DIR:-./runs}"
@@ -26,7 +26,7 @@ if [[ -z "${TORCHRUN_BIN}" || ! -x "${TORCHRUN_BIN}" ]]; then
     exit 1
 fi
 
-for path in "${LIBERO_DATA}" "${QWEN_PATH}" "${VJEPA_CKPT}" "${BASE_VLM_RUN}"; do
+for path in "${LIBERO_DATA}" "${QVV_PATH}" "${VJEPA_CKPT}" "${BASE_VLM_RUN}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
@@ -58,7 +58,7 @@ CMD=(
     "${TORCHRUN_BIN}" --standalone --nnodes 1 --nproc-per-node "${NPROC_PER_NODE}" --module prismatic.training.train
     --vla.base_vlm "${BASE_VLM_RUN}"
     --vla.vjepa_checkpoint_path "${VJEPA_CKPT}"
-    --llm_checkpoint_path "${QWEN_PATH}"
+    --llm_checkpoint_path "${QVV_PATH}"
     --data_root_dir "${LIBERO_DATA}"
     --run_root_dir "${RUNS_DIR}"
     --run_id_note "${RUN_ID_NOTE}"

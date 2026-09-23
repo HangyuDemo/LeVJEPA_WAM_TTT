@@ -39,6 +39,7 @@ dependencies = [
     "torchvision>=0.17",
     "tqdm>=4.66",
     "transformers>=4.45,<5",
+    "wandb>=0.19,<1.0",
 ]
 
 [project.optional-dependencies]

@@ -51,7 +51,7 @@ one training launcher, one evaluation launcher, the model implementation, and fo
 ## Highlights
 
 - Frozen V-JEPA 2.1 ViT-L encoder for primary and wrist observations.
-- Qwen2.5-0.5B policy backbone adapted with LoRA.
+- Qvv2.5-0.5B policy backbone adapted with LoRA.
 - GR00T-style flow-matching head for continuous action chunks.
 - Dense cosine alignment between policy visual tokens and paired future V-JEPA targets.
 - Reproducible launchers with full and end-to-end smoke-test modes.
@@ -77,11 +77,11 @@ one training launcher, one evaluation launcher, the model implementation, and fo
 </p>
 
 For each training sample, the current primary and wrist observations are encoded by a frozen V-JEPA 2.1 encoder. The
-resulting visual tokens are projected into Qwen2.5 and concatenated with the language instruction and learned action
-placeholder tokens. Qwen keeps its native causal attention mask.
+resulting visual tokens are projected into Qvv2.5 and concatenated with the language instruction and learned action
+placeholder tokens. Qvv keeps its native causal attention mask.
 
 The final action-placeholder states condition a flow-matching action head. In parallel, a two-layer MLP projects the
-final Qwen visual states back to the V-JEPA embedding dimension and aligns them with detached paired-frame targets:
+final Qvv visual states back to the V-JEPA embedding dimension and aligns them with detached paired-frame targets:
 
 ```text
 loss = action_flow_matching_loss + 0.5 * visual_token_cosine_loss
@@ -194,7 +194,7 @@ are missing on your machine.
 
 ## Pretrained Models
 
-JEPA-WAM needs three groups of weights: the official Qwen2.5 language model, the official V-JEPA 2.1 visual encoder,
+JEPA-WAM needs three groups of weights: the official Qvv2.5 language model, the official V-JEPA 2.1 visual encoder,
 and the JEPA-WAM base VLM/policy checkpoints.
 
 Set a common download root first:
@@ -204,13 +204,12 @@ ASSET_ROOT=/path/to/jepa_wam_assets
 mkdir -p "${ASSET_ROOT}"
 ```
 
-### Qwen2.5-0.5B
+### Qvv2.5-0.5B
 
-Download from the official [Qwen model repository](https://huggingface.co/Qwen/Qwen2.5-0.5B):
+Use the local, renamed model directory. `Qvv` is a project alias, not a Hub repository:
 
 ```bash
-hf download Qwen/Qwen2.5-0.5B \
-  --local-dir "${ASSET_ROOT}/Qwen2.5-0.5B"
+export QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 ```
 
 ### V-JEPA 2.1 ViT-L/16
@@ -232,18 +231,18 @@ below downloads the files required by the public training and evaluation launche
 
 ```bash
 hf download CokeAnd1ce/JEPA_WAM \
-  "checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/config.json" \
-  "checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/checkpoints/latest-checkpoint.pt" \
-  "checkpoints/libero/jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/config.json" \
-  "checkpoints/libero/jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/dataset_statistics.json" \
-  "checkpoints/libero/jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt" \
+  "checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/config.json" \
+  "checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/checkpoints/latest-checkpoint.pt" \
+  "checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/config.json" \
+  "checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/dataset_statistics.json" \
+  "checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt" \
   --local-dir "${ASSET_ROOT}/JEPA_WAM"
 ```
 
 The base VLM directory must retain this structure:
 
 ```text
-prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/
+prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7/
 ├── config.json
 └── checkpoints/
     └── latest-checkpoint.pt
@@ -259,16 +258,16 @@ export ASSET_ROOT=/path/to/jepa_wam_assets
 export LIBERO_DATA=/path/to/datasets/modified_libero_rlds
 export LIBERO_PATH=/path/to/LIBERO-plus
 
-export QWEN_PATH="${ASSET_ROOT}/Qwen2.5-0.5B"
+export QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 export VJEPA_CKPT="${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt"
-export BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7"
-export CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
+export BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7"
+export CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
 ```
 
 | Variable | Used by | Description |
 |---|---|---|
 | `LIBERO_DATA` | Training | Root containing the four modified LIBERO RLDS datasets |
-| `QWEN_PATH` | Both | Local Qwen2.5-0.5B directory |
+| `QVV_PATH` | Both | Local Qvv2.5-0.5B directory (official folder: `Qvv2.5-0.5B`) |
 | `VJEPA_CKPT` | Both | V-JEPA 2.1 ViT-L checkpoint file |
 | `BASE_VLM_RUN` | Both | Pretrained JEPA-WAM base VLM run directory |
 | `LIBERO_PATH` | Evaluation | LIBERO-Plus repository checkout |
@@ -469,7 +468,7 @@ RoboTwin 2.0, ablation, and real-world experiment tables are available on the
 The complete workflow was exercised in the reference environment on an H100 GPU:
 
 - `requirements.txt` resolved successfully and `pip check` reported no dependency conflicts.
-- A one-step run loaded Qwen, V-JEPA, the base VLM, and all four LIBERO RLDS datasets.
+- A one-step run loaded Qvv, V-JEPA, the base VLM, and all four LIBERO RLDS datasets.
 - Forward, backward, optimizer update, and checkpoint save completed with a smoke-test loss of `1.4728`.
 - The evaluator reconstructed a compatible checkpoint and produced an action in a LIBERO-Plus environment.
 
@@ -504,7 +503,7 @@ The paper is available on [arXiv:2608.09381](https://arxiv.org/abs/2608.09381). 
 ## Acknowledgements
 
 JEPA-WAM builds on [V-JEPA 2](https://github.com/facebookresearch/vjepa2),
-[Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-0.5B),
+Qvv2.5 (local backbone alias),
 [Prismatic VLMs](https://github.com/TRI-ML/prismatic-vlms), [OpenVLA](https://github.com/openvla/openvla), and
 [LIBERO-Plus](https://github.com/sylvestf/LIBERO-plus). We thank the authors for releasing their code, models,
 datasets, and benchmarks.

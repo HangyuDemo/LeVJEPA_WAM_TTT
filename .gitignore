@@ -13,6 +13,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+rollout_ttt_eval/
 eggs/
 .eggs/
 lib/

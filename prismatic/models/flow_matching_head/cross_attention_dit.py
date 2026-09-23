@@ -188,12 +188,24 @@ class TemporalTTTLayer(nn.Module):
         state: TTTFastWeightState,
         *,
         memory_tokens: Optional[torch.Tensor],
+        kv_tokens: Optional[torch.Tensor],
         update_memory: bool,
         valid_mask: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, TTTFastWeightState]:
         batch = tokens.shape[0]
         q_hidden, k_hidden, v_hidden = self.to_qkv(tokens).chunk(3, dim=-1)
-        if memory_tokens is None:
+        if memory_tokens is not None and kv_tokens is not None:
+            raise ValueError("TTT accepts either explicit memory_tokens or implicit kv_tokens, not both.")
+        if kv_tokens is not None:
+            if kv_tokens.ndim != 3 or kv_tokens.shape[0] != batch or kv_tokens.shape[-1] != self.dim:
+                raise ValueError(
+                    f"TTT implicit kv_tokens must have shape [B, N_kv, {self.dim}]."
+                )
+            if self.memory_dim != self.dim:
+                raise ValueError("Implicit DiT K/V requires memory_dim to equal the DiT token dimension.")
+            _, k, v = self.to_qkv(kv_tokens).chunk(3, dim=-1)
+            q = q_hidden
+        elif memory_tokens is None:
             # Backward-compatible path for direct users of TemporalTTTLayer.
             # Production JEPA-WAM calls always provide predicted V-JEPA tokens.
             if self.require_memory_tokens:
@@ -255,6 +267,7 @@ class TemporalTTTLayer(nn.Module):
         hidden_states: torch.Tensor,
         *,
         memory_tokens: Optional[torch.Tensor] = None,
+        kv_tokens: Optional[torch.Tensor] = None,
         time_steps: int,
         prev_fast_weights=None,
         update_memory: bool = True,
@@ -267,6 +280,8 @@ class TemporalTTTLayer(nn.Module):
             raise ValueError("The flattened DiT batch must be divisible by `time_steps`.")
 
         batch = hidden_states.shape[0] // time_steps
+        if memory_tokens is not None and kv_tokens is not None:
+            raise ValueError("TTT accepts either explicit memory_tokens or implicit kv_tokens, not both.")
         if memory_tokens is not None:
             if memory_tokens.ndim != 3 or memory_tokens.shape[0] != hidden_states.shape[0]:
                 raise ValueError(
@@ -275,6 +290,12 @@ class TemporalTTTLayer(nn.Module):
             flat_memory_tokens = memory_tokens
         else:
             flat_memory_tokens = None
+        if kv_tokens is not None:
+            if kv_tokens.ndim != 3 or kv_tokens.shape[0] != hidden_states.shape[0]:
+                raise ValueError("Flattened implicit kv_tokens must have shape [B*T, N_kv, D_dit].")
+            flat_kv_tokens = kv_tokens
+        else:
+            flat_kv_tokens = None
         if time_valid_mask is not None and tuple(time_valid_mask.shape) != (batch, time_steps):
             raise ValueError(
                 f"time_valid_mask must have shape {(batch, time_steps)}, got {tuple(time_valid_mask.shape)}."
@@ -286,6 +307,11 @@ class TemporalTTTLayer(nn.Module):
             if flat_memory_tokens is None
             else flat_memory_tokens.reshape(batch, time_steps, *flat_memory_tokens.shape[1:])
         )
+        kv_chunks = (
+            None
+            if flat_kv_tokens is None
+            else flat_kv_tokens.reshape(batch, time_steps, *flat_kv_tokens.shape[1:])
+        )
         state = self._normalize_state(prev_fast_weights, batch, hidden_states.device)
         outputs = []
         for index in range(time_steps):
@@ -294,6 +320,7 @@ class TemporalTTTLayer(nn.Module):
                 chunks[:, index],
                 state,
                 memory_tokens=None if memory_chunks is None else memory_chunks[:, index],
+                kv_tokens=None if kv_chunks is None else kv_chunks[:, index],
                 update_memory=update_memory,
                 valid_mask=valid,
             )
@@ -308,7 +335,10 @@ class TemporalTTTLayer(nn.Module):
 class RoboTTTStyleActionWrapper(nn.Module):
     """RoboTTT-style adapter attached to one selected DiT block.
 
-    The wrapped memory sees only the action-token output of the block.  The
+    The memory sees action tokens and, when enabled, the state/register prefix.
+    Unified scope returns the residual to state, registers and actions for both
+    memory sources. Legacy scope retains the older source-specific behavior. The
+    JEPA future-token middle stream is excluded from the direct residual. The
     surrounding DiT block remains the pretrained policy computation; this
     module adds a small, near-zero-gated recurrent residual exactly like the
     standalone ``robo_ttt.TTTWrapper``.  One independent fast-weight state is
@@ -324,11 +354,25 @@ class RoboTTTStyleActionWrapper(nn.Module):
         memory_dim: Optional[int],
         memory_source: str,
         learned_forget: bool = True,
+        prefix_token_count: int = 0,
+        token_scope: str = "legacy",
+        action_kv_scope: str = "query_tokens",
     ) -> None:
         super().__init__()
         if memory_source not in {"jepa", "action_tokens"}:
             raise ValueError(f"Unsupported RoboTTT memory source: {memory_source!r}.")
         self.memory_source = memory_source
+        if prefix_token_count < 0:
+            raise ValueError("prefix_token_count must be non-negative.")
+        self.prefix_token_count = prefix_token_count
+        if token_scope not in {"legacy", "state_register_action"}:
+            raise ValueError(f"Unsupported TTT token scope: {token_scope!r}.")
+        if token_scope == "state_register_action" and prefix_token_count < 2:
+            raise ValueError("Unified TTT scope requires a state/register prefix.")
+        self.token_scope = token_scope
+        if action_kv_scope not in {"query_tokens", "full_dit_tokens"}:
+            raise ValueError(f"Unsupported action K/V scope: {action_kv_scope!r}.")
+        self.action_kv_scope = action_kv_scope
         self.memory = TemporalTTTLayer(
             dim,
             memory_hidden_dim,
@@ -354,21 +398,43 @@ class RoboTTTStyleActionWrapper(nn.Module):
                 "RoboTTT action wrapper requires action_token_count within the DiT token sequence."
             )
 
-        # This is equivalent to robo_ttt.TTTWrapper(select_tokens_slice=...):
-        # only action tokens enter the recurrent memory, while all other DiT
-        # tokens pass through unchanged.
-        action_tokens = hidden_states[:, -action_token_count:]
+        prefix = self.prefix_token_count
+        if prefix + action_token_count > hidden_states.shape[1]:
+            raise ValueError("TTT prefix and action tokens must not overlap.")
+        # Layout: [state, registers, JEPA future tokens, actions]. Select the
+        # state/register prefix plus action suffix, excluding JEPA future tokens.
+        selected_tokens = torch.cat(
+            (hidden_states[:, :prefix], hidden_states[:, -action_token_count:]), dim=1
+        )
         memory_out, next_fast_weights = self.memory(
-            action_tokens,
+            selected_tokens,
             memory_tokens=None if self.memory_source == "action_tokens" else memory_tokens,
+            kv_tokens=(
+                hidden_states
+                if self.memory_source == "action_tokens" and self.action_kv_scope == "full_dit_tokens"
+                else None
+            ),
             time_steps=time_steps,
             prev_fast_weights=prev_fast_weights,
             update_memory=update_fast_weights,
             time_valid_mask=time_valid_mask,
             tbptt_step_size=tbptt_step_size,
         )
+        if self.memory_source == "jepa" and self.token_scope == "legacy":
+            # JEPA representations remain the memory K/V source, while their
+            # readout is applied only to the action-token suffix.
+            return torch.cat(
+                (
+                    hidden_states[:, :-action_token_count],
+                    hidden_states[:, -action_token_count:]
+                    + memory_out[:, -action_token_count:],
+                ),
+                dim=1,
+            ), next_fast_weights
         return torch.cat(
-            (hidden_states[:, :-action_token_count], action_tokens + memory_out),
+            (selected_tokens[:, :prefix] + memory_out[:, :prefix],
+             hidden_states[:, prefix:-action_token_count],
+             selected_tokens[:, prefix:] + memory_out[:, prefix:]),
             dim=1,
         ), next_fast_weights
 
@@ -431,9 +497,15 @@ class BasicTransformerBlock(nn.Module):
         attention_out_bias: bool = True,
         ttt_layer: Optional[TemporalTTTLayer] = None,
         ttt_wrapper: Optional[RoboTTTStyleActionWrapper] = None,
+        ttt_token_scope: str = "legacy",
+        ttt_prefix_token_count: int = 0,
+        ttt_action_kv_scope: str = "query_tokens",
     ):
         super().__init__()
         self.norm_type = norm_type
+        self.ttt_token_scope = ttt_token_scope
+        self.ttt_prefix_token_count = ttt_prefix_token_count
+        self.ttt_action_kv_scope = ttt_action_kv_scope
 
         if positional_embeddings and (num_positional_embeddings is None):
             raise ValueError(
@@ -528,32 +600,51 @@ class BasicTransformerBlock(nn.Module):
                 tbptt_step_size=tbptt_step_size,
             )
         elif self.ttt_layer is not None:
-            # Legacy path: preserve the original project behavior.  In the
-            # JEPA-memory mode the full post-attention DiT token sequence is
-            # used; in the action-token mode only the action suffix is used.
+            # Unified scope selects state/registers plus actions, never the
+            # JEPA future-token middle stream. Preserve legacy checkpoint scope.
+            if ttt_action_token_count is None or not 1 <= ttt_action_token_count <= hidden_states.shape[1]:
+                raise ValueError("Inline TTT requires ttt_action_token_count within the DiT token sequence.")
             ttt_tokens = hidden_states
-            if ttt_memory_source == "action_tokens":
-                if ttt_action_token_count is None or not 1 <= ttt_action_token_count <= hidden_states.shape[1]:
-                    raise ValueError(
-                        "Action-token TTT requires ttt_action_token_count within the DiT token sequence."
-                    )
+            prefix = self.ttt_prefix_token_count
+            if self.ttt_token_scope == "state_register_action":
+                if prefix < 1 or prefix + ttt_action_token_count > hidden_states.shape[1]:
+                    raise ValueError("TTT requires a non-overlapping state/register prefix and action suffix.")
+                ttt_tokens = torch.cat(
+                    (hidden_states[:, :prefix], hidden_states[:, -ttt_action_token_count:]), dim=1
+                )
+            elif ttt_memory_source == "action_tokens":
                 ttt_tokens = hidden_states[:, -ttt_action_token_count:]
             ttt_memory, next_fast_weights = self.ttt_layer(
                 ttt_tokens,
                 memory_tokens=None if ttt_memory_source == "action_tokens" else ttt_memory_tokens,
+                kv_tokens=(
+                    hidden_states
+                    if ttt_memory_source == "action_tokens"
+                    and self.ttt_action_kv_scope == "full_dit_tokens"
+                    else None
+                ),
                 time_steps=time_steps,
                 prev_fast_weights=prev_fast_weights,
                 update_memory=update_fast_weights,
                 time_valid_mask=time_valid_mask,
                 tbptt_step_size=tbptt_step_size,
             )
-            if ttt_memory_source == "action_tokens":
+            if self.ttt_token_scope == "state_register_action":
                 hidden_states = torch.cat(
-                    (hidden_states[:, :-ttt_action_token_count], hidden_states[:, -ttt_action_token_count:] + ttt_memory),
-                    dim=1,
+                    (
+                        hidden_states[:, :prefix] + ttt_memory[:, :prefix],
+                        hidden_states[:, prefix:-ttt_action_token_count],
+                        hidden_states[:, -ttt_action_token_count:] + ttt_memory[:, prefix:],
+                    ), dim=1,
                 )
             else:
-                hidden_states = hidden_states + ttt_memory
+                hidden_states = torch.cat(
+                    (
+                        hidden_states[:, :-ttt_action_token_count],
+                        hidden_states[:, -ttt_action_token_count:]
+                        + ttt_memory[:, -ttt_action_token_count:],
+                    ), dim=1,
+                )
 
         norm_hidden_states = self.norm3(hidden_states)
         ff_output = self.ff(norm_hidden_states)
@@ -591,6 +682,9 @@ class DiT(ModelMixin, ConfigMixin):
         ttt_enabled: bool = False,
         ttt_memory_source: str = "jepa",
         ttt_architecture: str = "wrapper",
+        ttt_wrapper_prefix_token_count: int = 0,
+        ttt_token_scope: str = "legacy",
+        ttt_action_kv_scope: str = "query_tokens",
         ttt_layer_indices: Optional[Sequence[int]] = None,
         ttt_memory_hidden_dim: Optional[int] = None,
         ttt_memory_dim: Optional[int] = None,
@@ -603,6 +697,12 @@ class DiT(ModelMixin, ConfigMixin):
         self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
         self.gradient_checkpointing = False
         self.ttt_enabled = ttt_enabled
+        if ttt_token_scope not in {"legacy", "state_register_action"}:
+            raise ValueError(f"Unsupported TTT token scope: {ttt_token_scope!r}.")
+        if ttt_enabled and ttt_token_scope == "state_register_action" and ttt_wrapper_prefix_token_count < 2:
+            raise ValueError("Unified TTT scope requires state and register tokens in the prefix.")
+        if ttt_action_kv_scope not in {"query_tokens", "full_dit_tokens"}:
+            raise ValueError(f"Unsupported action K/V scope: {ttt_action_kv_scope!r}.")
         if ttt_architecture not in {"inline", "wrapper"}:
             raise ValueError(
                 "ttt_architecture must be either 'inline' or 'wrapper', "
@@ -653,6 +753,9 @@ class DiT(ModelMixin, ConfigMixin):
                         memory_dim=memory_dim,
                         memory_source=ttt_memory_source,
                         learned_forget=ttt_learned_forget,
+                        prefix_token_count=ttt_wrapper_prefix_token_count,
+                        token_scope=ttt_token_scope,
+                        action_kv_scope=ttt_action_kv_scope,
                     )
                 else:
                     ttt_layer = TemporalTTTLayer(
@@ -678,6 +781,9 @@ class DiT(ModelMixin, ConfigMixin):
                     num_positional_embeddings=self.config.max_num_positional_embeddings,
                     final_dropout=final_dropout,
                     cross_attention_dim=curr_cross_attention_dim,
+                    ttt_token_scope=ttt_token_scope,
+                    ttt_prefix_token_count=ttt_wrapper_prefix_token_count,
+                    ttt_action_kv_scope=ttt_action_kv_scope,
                     ttt_layer=ttt_layer,
                     ttt_wrapper=ttt_wrapper,
                 )

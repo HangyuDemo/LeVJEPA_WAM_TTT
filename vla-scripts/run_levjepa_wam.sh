@@ -12,8 +12,8 @@ PYTHON_BIN="${PYTHON_BIN:-${ENV_ROOT}/bin/python}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-${ENV_ROOT}/bin/torchrun}"
 DATA_ROOT="${DATA_ROOT:-/home/ha865618/data/modified_libero_rlds}"
 ASSET_ROOT="${ASSET_ROOT:-${REPO_ROOT}/jepa_wam_assets}"
-BASE_VLM_RUN="${BASE_VLM_RUN:-${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7}"
-QWEN_PATH="${QWEN_PATH:-${ASSET_ROOT}/Qwen2.5-0.5B}"
+BASE_VLM_RUN="${BASE_VLM_RUN:-${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7}"
+QVV_PATH="${QVV_PATH:-${ASSET_ROOT}/Qvv2.5-0.5B}"
 LEVJEPA_CHECKPOINT="${LEVJEPA_CHECKPOINT:-${ASSET_ROOT}/LeVJEPA-VideoMix-Large}"
 RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/checkpoints}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
@@ -46,7 +46,7 @@ if [[ "${TTT_ENABLED}" != "0" && "${TTT_ENABLED}" != "1" ]]; then
     exit 1
 fi
 
-for path in "${DATA_ROOT}" "${BASE_VLM_RUN}" "${QWEN_PATH}" "${LEVJEPA_CHECKPOINT}"; do
+for path in "${DATA_ROOT}" "${BASE_VLM_RUN}" "${QVV_PATH}" "${LEVJEPA_CHECKPOINT}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
@@ -92,13 +92,13 @@ EXTRA_ARGS=(
     --vla.max_steps "${MAX_STEPS}"
     --vla.shuffle_buffer_size "${SHUFFLE_BUFFER_SIZE}"
     --vla.data_mix libero_4_task_suites_no_noops
-    --vla.train_qwen_lora True
+    --vla.train_qvv_lora True
     --vla.train_projector True
     --vla.train_action_head True
     --vla.train_visual_token_cosine_head True
     --vla.vision_backbone_id levjepa-vit-l-224px
     --vla.levjepa_checkpoint_path "${LEVJEPA_CHECKPOINT}"
-    --vla.vla_id "jepavla-qwen25-levjepa-224px+0_5b+mx-libero-90"
+        --vla.vla_id "jepavla-qvv25-levjepa-224px+0_5b+mx-libero-90"
     --save_interval "${SAVE_INTERVAL}"
     --cpu_memory_log_interval "${CPU_MEMORY_LOG_INTERVAL}"
     --debug_memory_stats False
@@ -134,7 +134,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     printf 'Command:'
     printf ' %q' "${TORCHRUN_BIN}" --standalone --nnodes=1 --nproc-per-node="${NPROC_PER_NODE}" --module prismatic.training.train \
         --vla.base_vlm "${BASE_VLM_RUN}" \
-        --llm_checkpoint_path "${QWEN_PATH}" \
+        --llm_checkpoint_path "${QVV_PATH}" \
         --data_root_dir "${DATA_ROOT}" \
         --run_root_dir "${RUN_ROOT}" \
         --run_id_note "${RUN_ID_NOTE}" \
@@ -150,7 +150,7 @@ fi
     --nproc-per-node="${NPROC_PER_NODE}" \
     --module prismatic.training.train \
     --vla.base_vlm "${BASE_VLM_RUN}" \
-    --llm_checkpoint_path "${QWEN_PATH}" \
+    --llm_checkpoint_path "${QVV_PATH}" \
     --data_root_dir "${DATA_ROOT}" \
     --run_root_dir "${RUN_ROOT}" \
     --run_id_note "${RUN_ID_NOTE}" \

@@ -194,7 +194,7 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
         # override the `SPECIAL_CASES` set below, but make sure to make the appropriate changes in the `datasets.py`
         # and VLM `forward()` logic!
         SPECIAL_CASES = {
-            "qwen25-0_5b-pure",
+            "qvv25-0_5b-pure",
         }
         if self.identifier in SPECIAL_CASES:
             return

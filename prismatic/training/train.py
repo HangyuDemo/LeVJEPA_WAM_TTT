@@ -174,6 +174,9 @@ def build_vla_from_base_vlm(
         ttt_memory_source=cfg.vla.ttt_memory_source,
         ttt_architecture=cfg.vla.ttt_architecture,
         ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
+        ttt_wrapper_register_tokens=cfg.vla.ttt_wrapper_register_tokens,
+        ttt_token_scope=cfg.vla.ttt_token_scope,
+        ttt_action_kv_scope=cfg.vla.ttt_action_kv_scope,
         ttt_layer_indices=cfg.vla.ttt_layer_indices,
         ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
         ttt_memory_dim=cfg.vla.ttt_memory_dim,
@@ -183,7 +186,7 @@ def build_vla_from_base_vlm(
         d_jepa=vision_backbone.embed_dim,
     )
 
-    # The base run provides the pretrained Qwen stack. Its projector is only
+    # The base run provides the pretrained Qvv stack. Its projector is only
     # reusable for the original V-JEPA backbone; LeVJEPA gets a fresh bridge
     # that is trained with the JEPA-WAM objective below.
     vlm.llm_backbone.load_state_dict(model_state_dict["llm_backbone"])
@@ -241,7 +244,7 @@ class TrainConfig:
     # VLAConfig (`prismatic/conf/vla.py`); override with --vla.type `VLARegistry.<VLA>.vla_id`
     vla: VLAConfig = field(
         default_factory=VLAConfig.get_choice_class(
-            VLARegistry.JEPAVLA_QWEN25_VJEPA_224PX_0_5B_LIBERO_90.vla_id
+            VLARegistry.JEPAVLA_QVV25_VJEPA_224PX_0_5B_LIBERO_90.vla_id
         )
     )
 
@@ -256,7 +259,7 @@ class TrainConfig:
     resume: bool = False                                             # Resume optimizer/scheduler/global step
 
     # Custom Local Paths (for JEPA-VLA and local model checkpoints)
-    llm_checkpoint_path: Optional[Path] = None                      # Local path to LLM (e.g., Qwen2.5-0.5B)
+    llm_checkpoint_path: Optional[Path] = None                      # Local path to the Qvv2.5-0.5B-compatible LLM
 
     # Run Arguments
     run_id: Optional[str] = None                                    # Run ID for logs and checkpoints
@@ -276,6 +279,15 @@ class TrainConfig:
     swanlab_project: str = "jepa-wam"
     swanlab_entity: Optional[str] = None
     use_swanlab: bool = False
+    wandb_project: str = "jepa-wam-ttt-2nd-round"
+    wandb_entity: Optional[str] = None
+    use_wandb: bool = False
+    validation_percent: int = 0
+    validation_sequences_per_suite: int = 16
+    validation_interval: int = 1000
+    validation_seed: int = 7
+    check_finite: bool = True
+    parameter_check_interval: int = 100
 
     def __post_init__(self) -> None:
         """Lift optimization parameters from `self.vla` for ease of use =>> validate on `expected_world_size`"""
@@ -290,6 +302,14 @@ class TrainConfig:
         self.warmup_ratio = self.vla.warmup_ratio
         if self.cpu_memory_log_interval < 0:
             raise ValueError("cpu_memory_log_interval must be non-negative.")
+        if not 0 <= self.validation_percent < 50:
+            raise ValueError("validation_percent must be in [0, 50).")
+        if min(self.validation_sequences_per_suite, self.validation_interval, self.parameter_check_interval) < 1:
+            raise ValueError("Validation limits/intervals and parameter_check_interval must be positive.")
+        if self.validation_percent and (
+            not self.vla.ttt_carry_between_segments or overwatch.world_size() != 1
+        ):
+            raise ValueError("Validation currently supports single-GPU segmented TTT action-only training.")
 
         # [Validate] Assert on `expected_world_size`
         assert (
@@ -326,13 +346,31 @@ def train(cfg: TrainConfig) -> None:
             if not previous_config_path.is_file():
                 raise ValueError("Round-2 resume requires the original run config.json.")
             with previous_config_path.open() as handle:
-                previous_vla = json.load(handle)["vla"]
+                previous_config = json.load(handle)
+                previous_vla = previous_config["vla"]
+            for key in ("validation_percent", "validation_sequences_per_suite", "validation_seed"):
+                previous = previous_config.get(key, 0 if key == "validation_percent" else getattr(cfg, key))
+                if previous != getattr(cfg, key):
+                    raise ValueError(f"Resume would change {key}; use a new run_id for a new validation recipe.")
             resume_keys = (
                 "ttt_carry_between_segments", "ttt_require_full_context", "ttt_context_length",
                 "ttt_tbptt_step_size", "ttt_architecture", "ttt_memory_source",
                 "global_batch_size", "per_device_batch_size", "max_steps", "learning_rate",
             )
             mismatched = [key for key in resume_keys if previous_vla.get(key) != getattr(cfg.vla, key)]
+            if previous_vla.get("ttt_token_scope", "legacy") != cfg.vla.ttt_token_scope:
+                mismatched.append("ttt_token_scope")
+            if previous_vla.get("ttt_action_kv_scope", "query_tokens") != cfg.vla.ttt_action_kv_scope:
+                mismatched.append("ttt_action_kv_scope")
+            if cfg.vla.ttt_token_scope == "state_register_action" and (
+                previous_vla.get("ttt_num_register_tokens", 16) != cfg.vla.ttt_num_register_tokens
+            ):
+                mismatched.append("ttt_num_register_tokens")
+            if cfg.vla.ttt_architecture == "wrapper" and (
+                previous_vla.get("ttt_wrapper_register_tokens", False) != cfg.vla.ttt_wrapper_register_tokens
+                or previous_vla.get("ttt_num_register_tokens", 16) != cfg.vla.ttt_num_register_tokens
+            ):
+                mismatched.append("ttt_wrapper_register_tokens/ttt_num_register_tokens")
             if mismatched:
                 raise ValueError(f"Resume would change the training recipe: {mismatched}. Use a new run_id.")
     else:
@@ -353,13 +391,6 @@ def train(cfg: TrainConfig) -> None:
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(run_dir / "checkpoints", exist_ok=True)
 
-    # Save Configuration =>> additionally save a JSON version for later HF Integration
-    if overwatch.is_rank_zero():
-        draccus.dump(cfg, open(run_dir / "config.yaml", "w"))
-        with open(run_dir / "config.yaml", "r") as f_yaml, open(run_dir / "config.json", "w") as f_json:
-            yaml_cfg = yaml.safe_load(f_yaml)
-            json.dump(yaml_cfg, f_json, indent=2)
-
     # Load VLA checkpoint (if resuming from training) or Base VLM otherwise (from `cfg.vla.base_vlm` ID or Path)
     #   =>> Note :: Verifies that all parameters are loaded in FP32 on load!
     overwatch.info(f"Loading Base VLM `{cfg.vla.base_vlm}` from ID/Path")
@@ -376,6 +407,9 @@ def train(cfg: TrainConfig) -> None:
             ttt_memory_source=cfg.vla.ttt_memory_source,
             ttt_architecture=cfg.vla.ttt_architecture,
             ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
+            ttt_wrapper_register_tokens=cfg.vla.ttt_wrapper_register_tokens,
+            ttt_token_scope=cfg.vla.ttt_token_scope,
+            ttt_action_kv_scope=cfg.vla.ttt_action_kv_scope,
             ttt_layer_indices=cfg.vla.ttt_layer_indices or None,
             ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
             ttt_memory_dim=cfg.vla.ttt_memory_dim,
@@ -388,7 +422,7 @@ def train(cfg: TrainConfig) -> None:
         vlm = build_vla_from_base_vlm(cfg.vla.base_vlm, cfg, hf_token)
 
     overwatch.info(
-        "Applying Qwen LoRA (rank=%d, alpha=%d, targets=%s)",
+        "Applying Qvv LoRA (rank=%d, alpha=%d, targets=%s)",
         cfg.vla.lora_rank,
         cfg.vla.lora_alpha,
         cfg.vla.lora_target_modules,
@@ -400,14 +434,14 @@ def train(cfg: TrainConfig) -> None:
         assert param.dtype == torch.float32, f"Loaded VLM parameter not in full precision: {param}"
 
     overwatch.info(
-        "Selecting trainable modules: qwen_lora=%s projector=%s action_head=%s visual_token_cosine_head=%s",
-        cfg.vla.train_qwen_lora,
+        "Selecting trainable modules: qvv_lora=%s projector=%s action_head=%s visual_token_cosine_head=%s",
+        cfg.vla.train_qvv_lora,
         cfg.vla.train_projector,
         cfg.vla.train_action_head,
         cfg.vla.train_visual_token_cosine_head,
     )
     vlm.freeze_for_training(
-        train_qwen_lora=cfg.vla.train_qwen_lora,
+        train_qvv_lora=cfg.vla.train_qvv_lora,
         train_projector=cfg.vla.train_projector,
         train_action_head=cfg.vla.train_action_head,
         train_ttt_only=cfg.vla.train_ttt_only,
@@ -439,7 +473,29 @@ def train(cfg: TrainConfig) -> None:
         flow_gr00t_placeholder_tokens=cfg.vla.flow_gr00t_placeholder_tokens,
         temporal_context_length=cfg.vla.ttt_context_length,
         require_full_context=cfg.vla.ttt_require_full_context,
+        validation_percent=cfg.validation_percent,
+        validation_sequences_per_suite=cfg.validation_sequences_per_suite,
     )
+
+    if cfg.validation_percent:
+        manifest_path = run_dir / "validation-split.json"
+        if cfg.resume:
+            if not manifest_path.exists() or json.loads(manifest_path.read_text()) != vla_dataset.split_manifest:
+                raise ValueError("Validation split/data metadata changed on resume. Use a new run_id.")
+        elif overwatch.is_rank_zero():
+            manifest_path.write_text(json.dumps(vla_dataset.split_manifest, indent=2))
+        overwatch.info("Episode holdout split: %s", vla_dataset.split_manifest)
+
+    # Publish configuration only after recipe and data-manifest checks succeed.
+    # Keep the original recipe on resume; record invocation details separately.
+    if overwatch.is_rank_zero():
+        config_stem = "resume-config" if cfg.resume else "config"
+        with (run_dir / f"{config_stem}.yaml").open("w") as handle:
+            draccus.dump(cfg, handle)
+        with (run_dir / f"{config_stem}.yaml").open() as f_yaml:
+            yaml_cfg = yaml.safe_load(f_yaml)
+        with (run_dir / f"{config_stem}.json").open("w") as f_json:
+            json.dump(yaml_cfg, f_json, indent=2)
 
     global_dataset_length = getattr(vla_dataset, "global_dataset_length", len(vla_dataset))
     overwatch.info(
@@ -483,16 +539,23 @@ def train(cfg: TrainConfig) -> None:
             resume_state["epoch"],
         )
 
-    # Create Metrics =>> Handles JSONL and optional SwanLab tracking.
-    overwatch.info(f"Creating Metrics with Active Trackers => `{cfg.trackers}`")
+    # Create Metrics =>> Handles JSONL plus optional SwanLab/WandB tracking.
+    active_trackers = tuple(cfg.trackers)
+    if cfg.use_wandb and "wandb" not in active_trackers:
+        active_trackers += ("wandb",)
+    overwatch.info(f"Creating Metrics with Active Trackers => `{active_trackers}`")
     metrics = VLAMetrics(
-        cfg.trackers,
+        active_trackers,
         cfg.run_id,
         run_dir,
         draccus.encode(cfg),
         swanlab_project=cfg.swanlab_project,
         swanlab_entity=cfg.swanlab_entity,
+        wandb_project=cfg.wandb_project,
+        wandb_entity=cfg.wandb_entity,
         use_swanlab=cfg.use_swanlab,
+        use_wandb=cfg.use_wandb,
+        grad_accumulation_steps=train_strategy.grad_accumulation_steps,
     )
     if resume_state is not None:
         metrics.global_step = resume_state["global_step"]
@@ -511,6 +574,11 @@ def train(cfg: TrainConfig) -> None:
         collator=collator,
         metrics=metrics,
         save_interval=cfg.save_interval,
+        validation_datasets=vla_dataset.validation_datasets,
+        validation_interval=cfg.validation_interval,
+        validation_seed=cfg.validation_seed,
+        check_finite=cfg.check_finite,
+        parameter_check_interval=cfg.parameter_check_interval,
     )
 
     # Finalize

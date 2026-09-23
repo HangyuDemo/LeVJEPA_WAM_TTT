@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=jepa-wam-r2-wrapper-jepa
+#SBATCH --job-name=jepa-wam-r2-wrapper-explicit
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:nvidia_h100_pcie:1
-#SBATCH --cpus-per-task=16
+# Avoid H100 nodes with confirmed CUDA initialization/FSDP failures.
+#SBATCH --exclude=evc22,evc30,evc38,evc43,evc45
+# Extreme low-CPU trial: keep one GPU while limiting host-side preprocessing.
+# The RLDS pipeline still keeps one reader/trajectory thread per LIBERO suite.
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=128G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=/home/ha865618/project/LeVJEPA_WAM_TTT/slurm_logs/%x-%j.out
 #SBATCH --error=/home/ha865618/project/LeVJEPA_WAM_TTT/slurm_logs/%x-%j.err
 
 set -euo pipefail
-
+export WANDB_API_KEY="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"
 REPO_ROOT="/home/ha865618/project/LeVJEPA_WAM_TTT"
 ENV_ROOT="/home/ha865618/.conda/envs/jepa_wam"
 PYTHON_BIN="${ENV_ROOT}/bin/python"
@@ -19,11 +23,14 @@ TORCHRUN_BIN="${ENV_ROOT}/bin/torchrun"
 
 DATA_ROOT="/home/ha865618/data/modified_libero_rlds"
 ASSET_ROOT="${REPO_ROOT}/jepa_wam_assets"
-BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qwen25-vjepa21-vitl-384px+0_5b+stage-finetune+x7"
-INITIAL_CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
-QWEN_PATH="${ASSET_ROOT}/Qwen2.5-0.5B"
+BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7"
+INITIAL_CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
+QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 VJEPA_CHECKPOINT="${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt"
-TTT_MEMORY_TAG="jepa-memory"
+TTT_MEMORY_TAG="explicit-jepa-kv"
+# Explicitly run the full 40,000 optimizer steps for this launcher.  The
+# sourced round-2 config derives OBSERVATION_BUDGET from MAX_STEPS.
+MAX_STEPS="${MAX_STEPS:-40000}"
 # Total context=32, segment=8. GB=4 automatically uses gradient accumulation
 # and 1/4 as many optimizer steps for the same valid-observation budget.
 source "${REPO_ROOT}/vla-scripts/ttt_round2_config.sh"
@@ -38,7 +45,7 @@ for path in \
     "${DATA_ROOT}/libero_10_no_noops" \
     "${BASE_VLM_RUN}" \
     "${INITIAL_CHECKPOINT}" \
-    "${QWEN_PATH}" \
+    "${QVV_PATH}" \
     "${VJEPA_CHECKPOINT}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
@@ -72,7 +79,10 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+export VLA_RLDS_FRAME_TRANSFORM_THREADS="${VLA_RLDS_FRAME_TRANSFORM_THREADS:-2}"
 export TF_CPP_MIN_LOG_LEVEL=2
+export WANDB_PROJECT="${WANDB_PROJECT:-jepa-wam-ttt-2nd-round}"
+export WANDB_DIR="${WANDB_DIR:-${REPO_ROOT}/wandb}"
 
 cd "${REPO_ROOT}"
 
@@ -85,6 +95,7 @@ echo "python_version=$(${PYTHON_BIN} --version)"
 echo "data=${DATA_ROOT}"
 echo "initial_checkpoint=${INITIAL_CHECKPOINT}"
 echo "ttt_memory_source=jepa"
+echo "ttt_action_kv_scope=${TTT_ACTION_KV_SCOPE} (ignored by explicit JEPA K/V route)"
 echo "ttt_architecture=${TTT_ARCHITECTURE}"
 if [[ "${TTT_ARCHITECTURE}" == "wrapper" ]]; then
     echo "ttt_layer_indices=3,7,11,15"
@@ -105,18 +116,18 @@ nvidia-smi
     --module prismatic.training.train \
     --vla.base_vlm "${BASE_VLM_RUN}" \
     "${RESUME_ARGS[@]}" \
-    --llm_checkpoint_path "${QWEN_PATH}" \
+    --llm_checkpoint_path "${QVV_PATH}" \
     --vla.vjepa_checkpoint_path "${VJEPA_CHECKPOINT}" \
     --data_root_dir "${DATA_ROOT}" \
     --run_root_dir "${RUN_ROOT}" \
-    --run_id_note "r2-${TTT_ARCHITECTURE}-jepa-memory-context${TTT_CONTEXT_LENGTH}-seg${TTT_TBPTT_STEP_SIZE}" \
+    --run_id_note "r2-${TTT_ARCHITECTURE_TAG}-explicit-jepa-kv-context${TTT_CONTEXT_LENGTH}-seg${TTT_TBPTT_STEP_SIZE}" \
     --vla.expected_world_size 1 \
     --vla.global_batch_size "${GLOBAL_BATCH_SIZE}" \
     --vla.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}" \
     --vla.max_steps "${MAX_STEPS}" \
     --vla.shuffle_buffer_size "${SHUFFLE_BUFFER_SIZE:-5000}" \
     --vla.data_mix libero_4_task_suites_no_noops \
-    --vla.train_qwen_lora False \
+    --vla.train_qvv_lora False \
     --vla.train_projector False \
     --vla.train_action_head False \
     --vla.train_ttt_only True \
@@ -124,6 +135,9 @@ nvidia-smi
     --vla.ttt_enabled True \
     --vla.ttt_memory_source jepa \
     --vla.ttt_architecture "${TTT_ARCHITECTURE}" \
+    --vla.ttt_token_scope "${TTT_TOKEN_SCOPE}" \
+    --vla.ttt_action_kv_scope "${TTT_ACTION_KV_SCOPE}" \
+    --vla.ttt_wrapper_register_tokens "${TTT_WRAPPER_REGISTER_TOKENS}" \
     --vla.ttt_context_length "${TTT_CONTEXT_LENGTH}" \
     --vla.ttt_carry_between_segments True \
     --vla.ttt_require_full_context True \
@@ -135,6 +149,14 @@ nvidia-smi
     --cpu_memory_log_interval 10 \
     --debug_batch_shapes True \
     --debug_memory_stats False \
-    --use_swanlab False
+    --validation_percent "${VALIDATION_PERCENT}" \
+    --validation_sequences_per_suite "${VALIDATION_SEQUENCES_PER_SUITE}" \
+    --validation_interval "${VALIDATION_INTERVAL}" \
+    --validation_seed "${VALIDATION_SEED}" \
+    --check_finite True \
+    --parameter_check_interval "${PARAMETER_CHECK_INTERVAL}" \
+    --use_swanlab False \
+    --use_wandb True \
+    --wandb_project "${WANDB_PROJECT}"
 
 echo "Training completed at $(date)"

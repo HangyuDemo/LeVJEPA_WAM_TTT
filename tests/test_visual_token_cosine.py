@@ -2,7 +2,7 @@ from pathlib import Path
 
 import torch
 
-from prismatic.conf.vla import Exp_JEPAVLA_Qwen25_VJEPA_0_5B_LIBERO_90
+from prismatic.conf.vla import Exp_JEPAVLA_Qvv25_VJEPA_0_5B_LIBERO_90
 from prismatic.models.action_heads import VisualTokenCosineHead
 from prismatic.models.flow_matching_head.cross_attention_dit import TemporalTTTLayer
 from prismatic.models.flow_gr00t_action_head import FlowMatchingActionHead
@@ -192,7 +192,7 @@ def test_temporal_action_loss_ignores_padding_timesteps(monkeypatch) -> None:
 
 
 def test_public_recipe_keeps_single_visual_cosine_architecture() -> None:
-    cfg = Exp_JEPAVLA_Qwen25_VJEPA_0_5B_LIBERO_90()
+    cfg = Exp_JEPAVLA_Qvv25_VJEPA_0_5B_LIBERO_90()
     script = (REPO_ROOT / "vla-scripts" / "run_visual_cosine_primary.sh").read_text()
     architecture_source = "\n".join(
         path.read_text()
@@ -234,7 +234,7 @@ def test_public_recipe_keeps_single_visual_cosine_architecture() -> None:
 
 
 def test_public_vla_config_matches_released_model() -> None:
-    cfg = Exp_JEPAVLA_Qwen25_VJEPA_0_5B_LIBERO_90()
+    cfg = Exp_JEPAVLA_Qvv25_VJEPA_0_5B_LIBERO_90()
 
     assert (cfg.lora_rank, cfg.lora_alpha, cfg.lora_dropout) == (32, 64, 0.1)
     assert cfg.flow_gr00t_placeholder_tokens > 0
@@ -313,9 +313,9 @@ def test_public_launchers_require_explicit_asset_paths() -> None:
     training = (REPO_ROOT / "vla-scripts" / "run_visual_cosine_primary.sh").read_text()
     evaluation = (REPO_ROOT / "vla-scripts" / "libero_plus.sh").read_text()
 
-    for variable in ("LIBERO_DATA", "QWEN_PATH", "VJEPA_CKPT", "BASE_VLM_RUN"):
+    for variable in ("LIBERO_DATA", "QVV_PATH", "VJEPA_CKPT", "BASE_VLM_RUN"):
         assert f'${{{variable}:?' in training
-    for variable in ("QWEN_PATH", "BASE_VLM_RUN", "LIBERO_PATH"):
+    for variable in ("QVV_PATH", "BASE_VLM_RUN", "LIBERO_PATH"):
         assert f'${{{variable}:?' in evaluation
     assert 'VJEPA_CKPT="${VJEPA_CKPT:-}"' in evaluation
     assert 'LEVJEPA_CKPT="${LEVJEPA_CKPT:-}"' in evaluation

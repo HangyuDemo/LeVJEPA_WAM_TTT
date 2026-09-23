@@ -51,6 +51,7 @@ def make_dataset_from_rlds(
     action_normalization_mask: Optional[List[bool]] = None,
     num_parallel_reads: int = tf.data.AUTOTUNE,
     num_parallel_calls: int = tf.data.AUTOTUNE,
+    split: str = "train",
 ) -> Tuple[dl.DLataset, dict]:
     """
     This function is responsible for loading a specific RLDS dataset from storage and getting it into a standardized
@@ -229,7 +230,7 @@ def make_dataset_from_rlds(
         dataset_statistics["action"]["mask"] = np.array(action_normalization_mask)
 
     # construct the dataset
-    dataset = dl.DLataset.from_rlds(builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+    dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
     dataset = dataset.traj_map(restructure, num_parallel_calls)
     dataset = dataset.traj_map(
@@ -241,6 +242,29 @@ def make_dataset_from_rlds(
     )
 
     return dataset, dataset_statistics
+
+
+def select_validation_window(traj):
+    """One middle full-context window per eligible episode, before flattening."""
+    indices = tf.where(tf.reduce_all(traj["observation"]["pad_mask"], axis=-1))[:, 0]
+    middle = indices[tf.size(indices) // 2 : tf.size(indices) // 2 + 1]
+    return tf.nest.map_structure(lambda value: tf.gather(value, middle), traj)
+
+
+def make_validation_dataset(dataset_kwargs, statistics, trajectory_kwargs, frame_kwargs, max_sequences):
+    """Finite deterministic validation; no repeat, shuffle or random goal relabeling."""
+    dataset, _ = make_dataset_from_rlds(
+        **{**dataset_kwargs, "shuffle": False}, dataset_statistics=statistics,
+        num_parallel_calls=1, num_parallel_reads=1,
+    )
+    trajectory_kwargs = {**trajectory_kwargs, "goal_relabeling_strategy": None}
+    dataset = apply_trajectory_transforms(dataset, **trajectory_kwargs, num_parallel_calls=1)
+    dataset = dataset.traj_map(select_validation_window, num_parallel_calls=1)
+    dataset = dataset.flatten(num_parallel_calls=1).take(max_sequences)
+    dataset = apply_frame_transforms(dataset, **{**frame_kwargs, "num_parallel_calls": 1})
+    options = tf.data.Options()
+    options.deterministic = True
+    return dataset.with_options(options).with_ram_budget(1)
 
 
 def apply_trajectory_transforms(

@@ -1,10 +1,10 @@
-"""Factories for the selectable JEPA-WAM visual backbones and Qwen stack."""
+"""Factories for the selectable JEPA-WAM visual backbones and Qvv stack."""
 
 from typing import Optional, Tuple
 
 from transformers import PreTrainedTokenizerBase
 
-from prismatic.models.backbones.llm import LLMBackbone, Qwen25LLMBackbone
+from prismatic.models.backbones.llm import LLMBackbone, Qvv25LLMBackbone
 from prismatic.models.backbones.vision import (
     ImageTransform,
     LeVJEPAViTBackbone,
@@ -15,7 +15,7 @@ from prismatic.models.vlms import PrismaticVLM
 
 VISION_BACKBONE_ID = "vjepa2_1-vit-l-384px"
 LEVJEPA_VISION_BACKBONE_ID = "levjepa-vit-l-224px"
-LLM_BACKBONE_ID = "qwen25-0_5b-pure"
+LLM_BACKBONE_ID = "qvv25-0_5b-pure"
 
 
 def get_vision_backbone_and_transform(
@@ -52,7 +52,7 @@ def get_llm_backbone_and_tokenizer(
 ) -> Tuple[LLMBackbone, PreTrainedTokenizerBase]:
     if llm_backbone_id != LLM_BACKBONE_ID:
         raise ValueError(f"The public recipe only supports `{LLM_BACKBONE_ID}`, got `{llm_backbone_id}`.")
-    backbone = Qwen25LLMBackbone(
+    backbone = Qvv25LLMBackbone(
         llm_backbone_id,
         llm_max_length=llm_max_length,
         llm_path=custom_hf_path,

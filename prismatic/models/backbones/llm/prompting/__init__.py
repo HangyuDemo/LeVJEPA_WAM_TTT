@@ -1,2 +1,2 @@
 from .base_prompter import PromptBuilder, PurePromptBuilder
-from .qwen_prompter import QwenPromptBuilder
+from .qvv_prompter import QvvPromptBuilder

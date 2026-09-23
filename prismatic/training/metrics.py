@@ -1,9 +1,11 @@
 """
 metrics.py
 
-Metrics and JSONL/SwanLab trackers for the fixed JEPA-WAM training loop.
+Metrics and JSONL/SwanLab/WandB trackers for the fixed JEPA-WAM training loop.
 """
 
+import hashlib
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -94,6 +96,70 @@ class SwanLabTracker:
             swanlab.finish()
 
 
+class WandBTracker:
+    """Optional Weights & Biases tracker with lazy import and rank-zero logging."""
+
+    def __init__(
+        self,
+        run_id: str,
+        run_dir: Path,
+        hparams: Dict[str, Any],
+        project: str = "jepa-wam-ttt-2nd-round",
+        entity: Optional[str] = None,
+        enabled: bool = False,
+    ) -> None:
+        self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
+        self.project, self.entity, self.enabled = project, entity, enabled
+        self._wandb = None
+        self.initialize()
+
+    @overwatch.rank_zero_only
+    def initialize(self) -> None:
+        if not self.enabled:
+            return
+
+        try:
+            import wandb
+        except ImportError as exc:
+            raise RuntimeError(
+                "WandB is enabled but the `wandb` package is not installed. "
+                "Install it in the jepa_wam environment with `python -m pip install wandb`."
+            ) from exc
+
+        if not os.environ.get("WANDB_API_KEY") and os.environ.get("WANDB_MODE", "online") != "offline":
+            raise RuntimeError(
+                "WandB is enabled but WANDB_API_KEY is not set. Export it in the shell before sbatch, "
+                "or set WANDB_MODE=offline."
+            )
+
+        self._wandb = wandb
+        # Keep the readable, full experiment name while using a short stable ID for resume.
+        wandb_id = hashlib.sha1(self.run_id.encode("utf-8")).hexdigest()[:20]
+        wandb.init(
+            project=self.project,
+            entity=self.entity,
+            name=self.run_id,
+            id=wandb_id,
+            resume="allow",
+            dir=os.environ.get("WANDB_DIR", str(self.run_dir)),
+            config=self.hparams,
+        )
+
+    @overwatch.rank_zero_only
+    def write_hyperparameters(self) -> None:
+        if self.enabled and self._wandb is not None:
+            self._wandb.config.update(self.hparams, allow_val_change=True)
+
+    @overwatch.rank_zero_only
+    def write(self, global_step: int, metrics: Dict[str, Union[int, float]]) -> None:
+        if self.enabled and self._wandb is not None:
+            self._wandb.log(metrics, step=global_step)
+
+    def finalize(self) -> None:
+        if overwatch.is_rank_zero() and self.enabled and self._wandb is not None:
+            self._wandb.finish()
+
+
 # === Fixed VLA Metrics ===
 
 
@@ -106,9 +172,12 @@ class VLAMetrics:
         hparams: Dict[str, Any],
         swanlab_project: str = "jepa-wam",
         swanlab_entity: Optional[str] = None,
+        wandb_project: str = "jepa-wam-ttt-2nd-round",
+        wandb_entity: Optional[str] = None,
         grad_accumulation_steps: int = 1,
         window_size: int = 1,
         use_swanlab: bool = False,
+        use_wandb: bool = False,
     ) -> None:
         self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
 
@@ -127,6 +196,15 @@ class VLAMetrics:
                     group="vla-train",
                     enabled=use_swanlab,
                 )
+            elif tracker_type == "wandb":
+                tracker = WandBTracker(
+                    run_id,
+                    run_dir,
+                    hparams,
+                    project=wandb_project,
+                    entity=wandb_entity,
+                    enabled=use_wandb,
+                )
             else:
                 raise ValueError(f"Tracker with type `{tracker_type} is not supported!")
 
@@ -135,16 +213,17 @@ class VLAMetrics:
             self.trackers.append(tracker)
 
         # Create Universal Metrics Buffers
+        loss_window = max(window_size, grad_accumulation_steps)
         self.global_step = 0
         self.epoch = 0
         self.start_time, self.step_start_time = time.time(), time.time()
         self.state = {
             "loss_raw": deque(maxlen=grad_accumulation_steps),
-            "loss": deque(maxlen=window_size),
+            "loss": deque(maxlen=loss_window),
             "step_time": deque(maxlen=window_size),
             "lr": [],
-            "loss_action": deque(maxlen=window_size),
-            "loss_visual_token_cosine": deque(maxlen=window_size),
+            "loss_action": deque(maxlen=loss_window),
+            "loss_visual_token_cosine": deque(maxlen=loss_window),
         }
 
         # Latest system metrics are emitted on the next tracker write, then cleared.
@@ -211,7 +290,7 @@ class VLAMetrics:
                 self.state["loss_raw"].append(loss_val)
                 self.state["loss"].append(loss_val)
             else:
-                self.state[key].append(value)
+                self.state[key].append(value.detach() if isinstance(value, torch.Tensor) else value)
 
     @overwatch.rank_zero_only
     def push(self) -> str:

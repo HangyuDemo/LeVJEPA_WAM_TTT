@@ -111,6 +111,9 @@ class PrismaticVLM(VLM):
             ttt_memory_source=ttt_memory_source,
             ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=kwargs.get("ttt_num_register_tokens", 16),
+            ttt_wrapper_register_tokens=kwargs.get("ttt_wrapper_register_tokens", False),
+            ttt_token_scope=kwargs.get("ttt_token_scope", "legacy"),
+            ttt_action_kv_scope=kwargs.get("ttt_action_kv_scope", "query_tokens"),
             ttt_layer_indices=kwargs.get("ttt_layer_indices") or None,
             ttt_memory_hidden_dim=kwargs.get("ttt_memory_hidden_dim"),
             ttt_memory_dim=ttt_memory_dim,
@@ -214,7 +217,7 @@ class PrismaticVLM(VLM):
     def freeze_for_training(
         self,
         *,
-        train_qwen_lora: bool = True,
+        train_qvv_lora: bool = True,
         train_projector: bool = False,
         train_action_head: bool = True,
         train_ttt_only: bool = False,
@@ -223,8 +226,8 @@ class PrismaticVLM(VLM):
         """Freeze the fixed base and select which JEPA-WAM modules to train.
 
         The vision encoder is always frozen. The projector can be trained when
-        a replacement vision encoder needs a new visual-to-Qwen bridge. Qwen's
-        non-LoRA weights are always frozen; ``train_qwen_lora`` controls only
+        a replacement vision encoder needs a new visual-to-Qvv bridge. Qvv's
+        non-LoRA weights are always frozen; ``train_qvv_lora`` controls only
         the LoRA adapters.
         """
         self.vision_backbone.requires_grad_(False)
@@ -233,11 +236,11 @@ class PrismaticVLM(VLM):
 
         lora_param_names = []
         for name, param in self.llm_backbone.named_parameters():
-            if train_qwen_lora and "lora_" in name:
+            if train_qvv_lora and "lora_" in name:
                 param.requires_grad_(True)
                 lora_param_names.append(name)
-        if train_qwen_lora and not lora_param_names:
-            raise RuntimeError("Qwen must be wrapped with LoRA before calling `freeze_for_training`.")
+        if train_qvv_lora and not lora_param_names:
+            raise RuntimeError("Qvv must be wrapped with LoRA before calling `freeze_for_training`.")
 
         if train_ttt_only:
             if not self.action_head.ttt_enabled:
@@ -252,11 +255,16 @@ class PrismaticVLM(VLM):
                 raise ValueError("train_ttt_only=True but no TTT layers were constructed.")
             for ttt_module in ttt_modules:
                 ttt_module.requires_grad_(True)
+            if self.action_head.register_tokens is not None and (
+                self.action_head.ttt_architecture == "wrapper"
+                or self.action_head.ttt_token_scope == "state_register_action"
+            ):
+                self.action_head.register_tokens.requires_grad_(True)
         else:
             self.action_head.requires_grad_(train_action_head)
         self.visual_token_cosine_head.requires_grad_(train_visual_token_cosine_head)
         self.trainable_module_keys = []
-        if train_qwen_lora:
+        if train_qvv_lora:
             self.trainable_module_keys.append("llm_backbone")
         if train_projector:
             self.trainable_module_keys.append("projector")
@@ -273,16 +281,16 @@ class PrismaticVLM(VLM):
             overwatch.info(f"[TRAINABLE] =>> Projector `{self.arch_specifier}`", ctx_level=1)
         else:
             overwatch.info(f"[Frozen] =>> Projector `{self.arch_specifier}`", ctx_level=1)
-        if train_qwen_lora:
+        if train_qvv_lora:
             overwatch.info(
-                f"[TRAINABLE] =>> Qwen LoRA (`{len(lora_param_names)}` parameter groups matched)",
+                f"[TRAINABLE] =>> Qvv LoRA (`{len(lora_param_names)}` parameter groups matched)",
                 ctx_level=1,
             )
         else:
-            overwatch.info("[Frozen] =>> Qwen (including LoRA)", ctx_level=1)
+            overwatch.info("[Frozen] =>> Qvv (including LoRA)", ctx_level=1)
         if train_ttt_only:
             overwatch.info(
-                "[TRAINABLE] =>> TTT layers only; pretrained Flow-GR00T Action Head is frozen",
+                "[TRAINABLE] =>> TTT layers and scope-enabled registers; pretrained Flow-GR00T Action Head is frozen",
                 ctx_level=1,
             )
         elif train_action_head:
@@ -341,7 +349,7 @@ class PrismaticVLM(VLM):
             if action_positions.shape[1] != num_action_tokens:
                 raise ValueError("action_positions does not match num_action_tokens.")
             if action_positions.numel() and int(action_positions.max()) >= llm_hidden.shape[1]:
-                raise ValueError("An action-placeholder position is outside the Qwen hidden sequence.")
+                raise ValueError("An action-placeholder position is outside the Qvv hidden sequence.")
             gather_positions = action_positions.to(device=llm_hidden.device, dtype=torch.long).unsqueeze(-1)
             gather_positions = gather_positions.expand(-1, -1, llm_hidden.shape[-1])
             return llm_hidden.gather(dim=1, index=gather_positions)
@@ -429,7 +437,7 @@ class PrismaticVLM(VLM):
         if patch_features.dtype != projector_dtype:
             patch_features = patch_features.to(dtype=projector_dtype)
         projected_patch_embeddings = self.projector(patch_features)
-        # The Qwen backbone may be restored in BF16 for inference while the
+        # The Qvv backbone may be restored in BF16 for inference while the
         # projector itself is kept in FP32.  Cast the projected tokens to the
         # LLM parameter dtype before concatenating them with token embeddings.
         llm_dtype = next(self.llm_backbone.parameters()).dtype
@@ -496,7 +504,7 @@ class PrismaticVLM(VLM):
         if memory_stats is not None and (snap := _maybe_cuda_mem_snapshot("after_llm_forward")) is not None:
             memory_stats.append(snap)
         if llm_output.hidden_states is None:
-            raise RuntimeError("Qwen did not return hidden states.")
+            raise RuntimeError("Qvv did not return hidden states.")
 
         llm_hidden = llm_output.hidden_states[-1]
         vision_token_count = projected_patch_embeddings.shape[1]
@@ -510,7 +518,7 @@ class PrismaticVLM(VLM):
         # JEPA-WAM DiT conditioning: use only the action-placeholder hidden
         # states.  These tokens already contain the fused visual, language,
         # and task context needed by the action expert.  Keep the raw visual
-        # Qwen tokens separate: they are mapped below to the WAM-predicted
+        # Qvv tokens separate: they are mapped below to the WAM-predicted
         # JEPA representation and used exclusively as TTT memory.
         vl_condition = action_memory
 

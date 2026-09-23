@@ -3,18 +3,18 @@ from typing import Optional
 from prismatic.models.backbones.llm.prompting.base_prompter import PromptBuilder
 
 SYS_PROMPTS = {
-    "prismatic": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-    "openvla": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+    "prismatic": "You are Qvv, created by Alibaba Cloud. You are a helpful assistant.",
+    "openvla": "You are Qvv, created by Alibaba Cloud. You are a helpful assistant.",
 }
 
 
-class QwenPromptBuilder(PromptBuilder):
+class QvvPromptBuilder(PromptBuilder):
     def __init__(self, model_family: str, system_prompt: Optional[str] = None) -> None:
         super().__init__(model_family, system_prompt)
 
         self.system_prompt = (SYS_PROMPTS[model_family] if system_prompt is None else self.system_prompt).strip()
 
-        # Note =>> Qwen Tokenizer is an instance of `Qwen2Tokenizer(Fast)`
+        # Note =>> Qvv uses the official `Qvv2Tokenizer(Fast)` implementation.
         #      =>> By default, there is *no* <BOS> token. we add <EOS> manually.
         self.bos = self.start = "<|im_start|>"  # NOTE this is not used
         self.eos = "<|endoftext|>"

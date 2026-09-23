@@ -72,6 +72,9 @@ def load_vla(
     ttt_memory_source: Optional[str] = None,
     ttt_architecture: Optional[str] = None,
     ttt_num_register_tokens: Optional[int] = None,
+    ttt_wrapper_register_tokens: Optional[bool] = None,
+    ttt_token_scope: Optional[str] = None,
+    ttt_action_kv_scope: Optional[str] = None,
     ttt_layer_indices: Optional[Tuple[int, ...]] = None,
     ttt_memory_hidden_dim: Optional[int] = None,
     ttt_memory_dim: Optional[int] = None,
@@ -98,6 +101,9 @@ def load_vla(
         "ttt_memory_source": ttt_memory_source,
         "ttt_architecture": ttt_architecture,
         "ttt_num_register_tokens": ttt_num_register_tokens,
+        "ttt_wrapper_register_tokens": ttt_wrapper_register_tokens,
+        "ttt_token_scope": ttt_token_scope,
+        "ttt_action_kv_scope": ttt_action_kv_scope,
         "ttt_layer_indices": ttt_layer_indices,
         "ttt_memory_hidden_dim": ttt_memory_hidden_dim,
         "ttt_memory_dim": ttt_memory_dim,
@@ -133,7 +139,7 @@ def load_vla(
         )
     llm_checkpoint = llm_checkpoint_path or full_cfg.get("llm_checkpoint_path") or model_cfg.get("llm_local_path")
     if not vision_checkpoint or not llm_checkpoint:
-        raise ValueError("Both the selected vision encoder and Qwen checkpoint paths are required to reconstruct JEPA-WAM.")
+        raise ValueError("Both the selected vision encoder and Qvv checkpoint paths are required to reconstruct JEPA-WAM.")
 
     overwatch.info(f"Loading JEPA-WAM checkpoint `{checkpoint_path}`")
     vision_backbone, _ = get_vision_backbone_and_transform(
@@ -152,7 +158,7 @@ def load_vla(
 
     model = OpenVLA.from_pretrained(
         checkpoint_path,
-        model_cfg.get("model_id", "prism-qwen25-vjepa21-vitl-384px+0_5b"),
+        model_cfg.get("model_id", "prism-qvv25-vjepa21-vitl-384px+0_5b"),
         vision_backbone,
         llm_backbone,
         arch_specifier=model_cfg.get("arch_specifier", "no-align+gelu-mlp"),
@@ -178,6 +184,9 @@ def load_vla(
         ttt_memory_source=vla_cfg.get("ttt_memory_source", "jepa"),
         ttt_architecture=vla_cfg.get("ttt_architecture", "wrapper"),
         ttt_num_register_tokens=int(vla_cfg.get("ttt_num_register_tokens", 16)),
+        ttt_wrapper_register_tokens=bool(vla_cfg.get("ttt_wrapper_register_tokens", False)),
+        ttt_token_scope=vla_cfg.get("ttt_token_scope", "legacy"),
+        ttt_action_kv_scope=vla_cfg.get("ttt_action_kv_scope", "query_tokens"),
         ttt_layer_indices=vla_cfg.get("ttt_layer_indices") or None,
         ttt_memory_hidden_dim=vla_cfg.get("ttt_memory_hidden_dim"),
         ttt_memory_dim=(

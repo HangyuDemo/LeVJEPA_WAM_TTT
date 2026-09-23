@@ -6,7 +6,6 @@ fine-grained control over wrapping policies and mixed precision per component).
 """
 
 import math
-import shutil
 from collections import OrderedDict
 from functools import partial
 from pathlib import Path
@@ -36,6 +35,7 @@ from prismatic.training.strategies.base_strategy import (
     TrainingStrategy,
     get_cosine_schedule_with_warmup_and_group_min_lrs,
 )
+from prismatic.training.checkpoint_io import save_training_checkpoint
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -129,7 +129,7 @@ class FSDPStrategy(TrainingStrategy):
                     )
 
                 # Save model plus optimizer/scheduler progress for exact optimizer resume.
-                torch.save(
+                save_training_checkpoint(
                     {
                         "model": model_state_dicts,
                         "training_state": {
@@ -137,11 +137,11 @@ class FSDPStrategy(TrainingStrategy):
                             "lr_scheduler": scheduler_state_dict,
                             "global_step": int(global_step),
                             "epoch": int(epoch),
+                            "best_validation_loss": getattr(self, "best_validation_loss", float("inf")),
                         },
                     },
                     checkpoint_path,
                 )
-                shutil.copy(checkpoint_path, checkpoint_dir / "latest-checkpoint.pt")
 
     def load_training_state(self, checkpoint_path: Path) -> dict:
         """Restore optimizer/scheduler state after this FSDP instance is initialized."""
@@ -160,6 +160,7 @@ class FSDPStrategy(TrainingStrategy):
             self.optimizer.load_state_dict(optimizer_state_dict)
         if self.lr_scheduler is not None and training_state.get("lr_scheduler") is not None:
             self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
+        self.best_validation_loss = training_state.get("best_validation_loss", float("inf"))
 
         return {
             "global_step": int(training_state.get("global_step", 0)),
@@ -279,6 +280,6 @@ class FSDPStrategy(TrainingStrategy):
                 len(group["params"]),
             )
 
-    def clip_grad_norm(self) -> None:
+    def clip_grad_norm(self) -> torch.Tensor:
         # Note =>> FSDP uses a custom `clip_grad_norm_` function; requires *uniform grad dtype*
-        self.vlm.clip_grad_norm_(max_norm=self.max_grad_norm)
+        return self.vlm.clip_grad_norm_(max_norm=self.max_grad_norm)

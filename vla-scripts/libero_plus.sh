@@ -30,7 +30,7 @@ if [[ -z "${CHECKPOINT}" ]]; then
 fi
 
 : "${BASE_VLM_RUN:?Set BASE_VLM_RUN to the downloaded pretrained VLM run directory}"
-: "${QWEN_PATH:?Set QWEN_PATH to the downloaded Qwen2.5-0.5B directory}"
+: "${QVV_PATH:?Set QVV_PATH to the downloaded Qvv2.5-0.5B directory}"
 VJEPA_CKPT="${VJEPA_CKPT:-}"
 LEVJEPA_CKPT="${LEVJEPA_CKPT:-}"
 if [[ -z "${VJEPA_CKPT}" && -z "${LEVJEPA_CKPT}" ]]; then
@@ -51,7 +51,7 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     exit 1
 fi
 
-for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QWEN_PATH}" "${LIBERO_PATH}"; do
+for path in "${CHECKPOINT}" "${BASE_VLM_RUN}" "${QVV_PATH}" "${LIBERO_PATH}"; do
     if [[ ! -e "${path}" ]]; then
         echo "Required path does not exist: ${path}" >&2
         exit 1
@@ -118,7 +118,7 @@ for suite in "${SUITES[@]}"; do
         "${PYTHON_BIN}" experiments/robot/libero/run_libero_eval.py
         --pretrained_checkpoint "${CHECKPOINT}"
         --base_vlm "${BASE_VLM_RUN}"
-        --llm_checkpoint_path "${QWEN_PATH}"
+        --llm_checkpoint_path "${QVV_PATH}"
         --task_suite_name "${suite}"
         --libero_plus_categories "${CATEGORIES}"
         --num_trials_per_task "${TRIALS}"

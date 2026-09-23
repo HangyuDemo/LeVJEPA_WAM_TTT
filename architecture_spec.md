@@ -25,14 +25,14 @@ current images -> V-JEPA -> current_vjepa
 current_vjepa: [B, V * N, D_jepa]
 ```
 
-V-JEPA parameters are frozen. The pretrained VLM projector maps these tokens to the Qwen hidden dimension:
+V-JEPA parameters are frozen. The pretrained VLM projector maps these tokens to the Qvv hidden dimension:
 
 ```text
 projected_visual = vision_projector(current_vjepa)
 projected_visual: [B, V * N, D_llm]
 ```
 
-## 3. Qwen Sequence and Attention
+## 3. Qvv Sequence and Attention
 
 The multimodal sequence is formed as:
 
@@ -40,20 +40,20 @@ The multimodal sequence is formed as:
 [BOS] [visual tokens] [text tokens] [action placeholder tokens]
 ```
 
-Qwen2.5-0.5B processes this sequence with its native causal attention. No prefix-bidirectional mask or custom vision-text attention mask is constructed.
+Qvv2.5-0.5B processes this sequence with its native causal attention. No prefix-bidirectional mask or custom vision-text attention mask is constructed.
 
 Consequences of the causal ordering:
 
 - text tokens can attend to the preceding visual tokens;
 - action placeholders can attend to visual and text tokens;
-- a visual token only attends to earlier sequence positions, following normal Qwen behavior.
+- a visual token only attends to earlier sequence positions, following normal Qvv behavior.
 
-The final Qwen layer produces:
+The final Qvv layer produces:
 
 ```text
-qwen_hidden: [B, S, D_llm]
-visual_hidden = qwen_hidden[:, 1 : 1 + V * N]
-action_memory = gather(qwen_hidden, per-row action-placeholder positions)
+qvv_hidden: [B, S, D_llm]
+visual_hidden = qvv_hidden[:, 1 : 1 + V * N]
+action_memory = gather(qvv_hidden, per-row action-placeholder positions)
 ```
 
 Because prompts have different lengths, the collator right-pads each row.
@@ -65,11 +65,11 @@ insertion; it does not read padding states from a global `[:, -N:]` slice.
 
 The GR00T-style flow-matching action head is conditioned on:
 
-- `action_memory`, taken only from the action-placeholder Qwen states;
+- `action_memory`, taken only from the action-placeholder Qvv states;
 - the current proprio state;
 - noisy action tokens and the flow timestep.
 
-The full Qwen hidden sequence is not supplied directly to the action head. Visual tokens are not separately prepended to `action_memory`.
+The full Qvv hidden sequence is not supplied directly to the action head. Visual tokens are not separately prepended to `action_memory`.
 
 The action loss is the flow-matching regression loss:
 
@@ -103,7 +103,7 @@ The target is not passed through the pretrained VLM vision projector.
 
 ## 6. Visual-Token Cosine Head
 
-The final-layer Qwen visual states are projected into the V-JEPA embedding space by a fixed two-layer MLP:
+The final-layer Qvv visual states are projected into the V-JEPA embedding space by a fixed two-layer MLP:
 
 ```python
 pred = Linear(D_llm, 2 * D_jepa)(visual_hidden)
@@ -111,7 +111,7 @@ pred = GELU(pred)
 pred = Linear(2 * D_jepa, D_jepa)(pred)
 ```
 
-There is no convolutional projection alternative and no selectable intermediate Qwen layer.
+There is no convolutional projection alternative and no selectable intermediate Qvv layer.
 
 Both prediction and target are L2-normalized along the embedding dimension. The loss is:
 
@@ -122,7 +122,7 @@ target_n = normalize(target, dim=-1)
 L_visual = mean(1 - sum(pred_n * target_n, dim=-1))
 ```
 
-Gradients flow through the cosine MLP and the trainable Qwen LoRA parameters. They do not flow into the paired V-JEPA target.
+Gradients flow through the cosine MLP and the trainable Qvv LoRA parameters. They do not flow into the paired V-JEPA target.
 
 ## 7. Total Objective
 
@@ -143,12 +143,12 @@ The following objectives are disabled in this architecture:
 | Component | Fixed value |
 |---|---|
 | vision encoder | V-JEPA 2.1 ViT-L, frozen |
-| language model | Qwen2.5-0.5B with LoRA |
-| attention | native Qwen causal attention |
+| language model | Qvv2.5-0.5B with LoRA |
+| attention | native Qvv causal attention |
 | views | primary + wrist |
 | action horizon | 20 |
 | action head | Flow GR00T |
-| action conditioning | Qwen action-placeholder states |
+| action conditioning | Qvv action-placeholder states |
 | visual alignment head | `Linear -> GELU -> Linear` |
 | visual target | raw detached paired V-JEPA tokens |
 | pair offset | 31 |

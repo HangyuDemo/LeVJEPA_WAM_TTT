@@ -5,6 +5,8 @@ Shared optimizer, checkpoint, and fixed VLA training-loop logic for the FSDP str
 """
 
 import math
+import json
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Optional
@@ -20,6 +22,8 @@ from prismatic.models.vlms import PrismaticVLM
 from prismatic.overwatch import initialize_overwatch
 from prismatic.training.metrics import VLAMetrics
 from prismatic.training.temporal import backward_temporal_segments
+from prismatic.training.validation import evaluate_action_loss
+from prismatic.training.numerics import ensure_finite
 from prismatic.util import check_bloat16_supported
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 
@@ -143,7 +147,7 @@ class TrainingStrategy(ABC):
 
         ``DataLoader`` and the RLDS collator intentionally produce CPU
         tensors.  FSDP moves model parameters during ``run_setup`` but does
-        not move user inputs, so leaving this step implicit causes Qwen's
+        not move user inputs, so leaving this step implicit causes Qvv's
         embedding lookup (and any nested vision inputs) to fail with a device
         mismatch on the first training batch.
         """
@@ -249,7 +253,7 @@ class TrainingStrategy(ABC):
     def run_setup(self, run_dir: Path, n_train_examples: int) -> None: ...
 
     @abstractmethod
-    def clip_grad_norm(self) -> None: ...
+    def clip_grad_norm(self) -> torch.Tensor: ...
 
     def _cuda_mem_snapshot(self, label: str) -> dict:
         if not torch.cuda.is_available():
@@ -281,9 +285,16 @@ class TrainingStrategy(ABC):
         collator: PaddedCollatorForActionPrediction,
         metrics: VLAMetrics,
         save_interval: int = 2500,
+        validation_datasets=None,
+        validation_interval: int = 1000,
+        validation_seed: int = 7,
+        check_finite: bool = True,
+        parameter_check_interval: int = 100,
     ) -> None:
         """Run the VLA training loop for the given `dataset` and `collator`; log losses, action metrics to `metrics`."""
         assert isinstance(vla_dataset, IterableDataset), "VLA training expects an IterableDataset!"
+        if parameter_check_interval < 1:
+            raise ValueError("parameter_check_interval must be positive.")
 
         if metrics.global_step >= self.max_steps:
             overwatch.info(
@@ -317,6 +328,29 @@ class TrainingStrategy(ABC):
             dataloader_kwargs["pin_memory"],
         )
 
+        def validate():
+            overwatch.info("Running fixed held-out validation at step %d", metrics.global_step)
+            result = evaluate_action_loss(
+                self.vlm, validation_datasets, collator, self.ttt_segment_size, validation_seed,
+                move_to_device=self._move_batch_to_device,
+                autocast_context=lambda: torch.autocast(
+                    "cuda", dtype=self.mixed_precision_dtype, enabled=self.enable_mixed_precision_training
+                ),
+            )
+            if overwatch.is_rank_zero():
+                with (metrics.run_dir / "validation-metrics.jsonl").open("a") as handle:
+                    handle.write(json.dumps({"step": metrics.global_step, **result}) + "\n")
+            overwatch.info("Validation action loss: %.6f", result["Validation/Loss Action"])
+            return result
+
+        if validation_datasets:
+            if overwatch.world_size() != 1 or getattr(self, "ttt_segment_size", None) is None:
+                raise ValueError("Held-out validation currently requires single-GPU segmented action-only training.")
+            if validation_interval < 1:
+                raise ValueError("validation_interval must be positive.")
+            metrics.log(metrics.global_step, validate())
+        if check_finite:
+            ensure_finite(dict(self.vlm.named_parameters()), "initial_parameters")
 
         def process_batch(batch, *, grad_step_ready: bool, accum_divisor: int, epoch_value: int) -> bool:
             should_log_memory = (
@@ -360,6 +394,7 @@ class TrainingStrategy(ABC):
                     self.vlm, batch, segment_size, accum_divisor,
                     move_to_device=self._move_batch_to_device,
                     autocast_context=autocast_context,
+                    check_finite=check_finite,
                 )
             else:
                 batch = self._move_batch_to_device(batch)
@@ -374,6 +409,8 @@ class TrainingStrategy(ABC):
                         time_valid_mask=batch.get("time_valid_mask"),
                         action_valid_mask=batch.get("action_valid_mask"),
                     )
+                if check_finite:
+                    ensure_finite(output["loss"], "training_loss")
                 (output["loss"] / accum_divisor).backward()
             loss = output["loss"].detach()
 
@@ -400,7 +437,10 @@ class TrainingStrategy(ABC):
             if not grad_step_ready:
                 return False
 
-            self.clip_grad_norm()
+            grad_norm = self.clip_grad_norm()
+            if check_finite:
+                ensure_finite(grad_norm, "gradient_norm_before_clip")
+            metrics.set_system_metrics(**{"Training/Grad Norm": float(grad_norm)})
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
@@ -408,6 +448,13 @@ class TrainingStrategy(ABC):
                 self._log_cuda_mem_snapshot("after_optimizer_step", metrics.global_step + 1)
 
             metrics.commit(global_step=metrics.global_step + 1, epoch=epoch_value, lr=self.lr_scheduler.get_last_lr()[0])
+            if check_finite and (
+                metrics.global_step % parameter_check_interval == 0 or metrics.global_step >= self.max_steps
+            ):
+                ensure_finite(
+                    {name: param for name, param in self.vlm.named_parameters() if param.requires_grad},
+                    "trainable_parameters_after_step",
+                )
             if getattr(self, "ttt_require_full_context", False):
                 metrics.set_system_metrics(**{
                     "Training/Valid Observations": metrics.global_step * self.global_batch_size * batch["actions"].shape[1],
@@ -420,6 +467,17 @@ class TrainingStrategy(ABC):
                 cpu_memory_metrics = self.collect_cpu_memory_metrics()
                 if overwatch.is_rank_zero():
                     metrics.set_system_metrics(**cpu_memory_metrics)
+            validation_result = None
+            improved = False
+            if validation_datasets and (
+                metrics.global_step % validation_interval == 0 or metrics.global_step >= self.max_steps
+            ):
+                validation_result = validate()
+                current = validation_result["Validation/Loss Action"]
+                improved = current < getattr(self, "best_validation_loss", float("inf"))
+                if improved:
+                    self.best_validation_loss = current
+                metrics.set_system_metrics(**validation_result)
             status = metrics.push()
 
             step_save_due = (
@@ -427,10 +485,24 @@ class TrainingStrategy(ABC):
                 and save_interval > 0
                 and (metrics.global_step % save_interval) == 0
             )
-            if (terminate := metrics.global_step >= self.max_steps) or step_save_due:
+            if (terminate := metrics.global_step >= self.max_steps) or step_save_due or improved:
+                if check_finite:
+                    ensure_finite(
+                        {name: param for name, param in self.vlm.named_parameters() if param.requires_grad},
+                        "trainable_parameters_before_checkpoint",
+                    )
                 self.save_checkpoint(
                     metrics.run_dir, metrics.global_step, epoch_value, loss.item(), only_trainable=False
                 )
+                if improved and overwatch.is_rank_zero():
+                    checkpoint_dir = metrics.run_dir / "checkpoints"
+                    target = f"step-{metrics.global_step:06d}-epoch-{epoch_value:02d}-loss={loss.item():.4f}.pt"
+                    temporary = checkpoint_dir / ".best-validation-checkpoint.tmp"
+                    temporary.unlink(missing_ok=True)
+                    temporary.symlink_to(target)
+                    os.replace(temporary, checkpoint_dir / "best-validation-checkpoint.pt")
+                    with (metrics.run_dir / "best-validation.json").open("w") as handle:
+                        json.dump({"step": metrics.global_step, "checkpoint": target, **validation_result}, handle, indent=2)
                 dist.barrier()
                 if terminate:
                     return True
@@ -454,12 +526,20 @@ class TrainingStrategy(ABC):
             for train_idx, batch in enumerate(dataloader):
                 grad_step_ready = ((train_idx + 1) % self.grad_accumulation_steps) == 0
                 epoch_value = (metrics.global_step + 1) // epoch_denominator
-                if process_batch(
-                    batch,
-                    grad_step_ready=grad_step_ready,
-                    accum_divisor=self.grad_accumulation_steps,
-                    epoch_value=epoch_value,
-                ):
-                    return
+                try:
+                    if process_batch(
+                        batch,
+                        grad_step_ready=grad_step_ready,
+                        accum_divisor=self.grad_accumulation_steps,
+                        epoch_value=epoch_value,
+                    ):
+                        return
+                except FloatingPointError as exc:
+                    if overwatch.is_rank_zero():
+                        with (metrics.run_dir / "numerical-failure.json").open("w") as handle:
+                            json.dump({"global_step": metrics.global_step, "microbatch": train_idx,
+                                       "error": str(exc)}, handle, indent=2)
+                    overwatch.error("Training aborted at step %d: %s", metrics.global_step, exc)
+                    raise
 
         raise RuntimeError("LIBERO dataloader ended before max_steps was reached.")

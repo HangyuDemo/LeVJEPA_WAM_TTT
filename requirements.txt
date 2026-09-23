@@ -17,11 +17,13 @@ huggingface-hub==0.36.0
 imageio==2.37.3
 imageio-ffmpeg==0.6.0
 jsonlines==4.0.0
+wandb>=0.19,<1.0
 matplotlib==3.10.9
 mujoco==3.3.2
 ninja==1.13.0
 numba==0.66.0
 numpy==1.26.4
+openpyxl==3.1.5
 opencv-python==4.11.0.86
 packaging==26.0
 peft==0.13.2

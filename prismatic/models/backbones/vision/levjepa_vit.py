@@ -125,7 +125,7 @@ class LeVJEPAViTBackbone(VisionBackbone):
             raise ValueError(
                 f"Unexpected LeVJEPA token count: got {patch_tokens.shape[1]}, expected {expected}."
             )
-        # Keep only the last temporal slice so Qwen sees the same per-view
+        # Keep only the last temporal slice so Qvv sees the same per-view
         # token interface as the existing image backbone.
         patch_tokens = patch_tokens[:, -self._num_spatial_patches :, :]
         if num_views > 1:

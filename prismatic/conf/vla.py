@@ -12,10 +12,10 @@ from prismatic.vla.constants import NUM_ACTIONS_CHUNK, NUM_TOKENS
 
 @dataclass
 class VLAConfig(ChoiceRegistry):
-    """The released V-JEPA 2.1 + Qwen2.5 + Flow-GR00T recipe."""
+    """The released V-JEPA 2.1 + Qvv2.5 + Flow-GR00T recipe."""
 
-    vla_id: str = "jepavla-qwen25-vjepa-224px+0_5b+mx-libero-90"
-    base_vlm: Union[str, Path] = "prism-qwen25-vjepa21-vitl-384px+0_5b"
+    vla_id: str = "jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90"
+    base_vlm: Union[str, Path] = "prism-qvv25-vjepa21-vitl-384px+0_5b"
 
     data_mix: str = "libero_4_task_suites_no_noops"
     shuffle_buffer_size: int = 20_000
@@ -40,9 +40,9 @@ class VLAConfig(ChoiceRegistry):
 
     # Select which trainable JEPA-WAM modules are updated after loading the
     # frozen base VLM.  The default preserves the released recipe; disabling
-    # Qwen LoRA and the visual head gives action-expert-only fine-tuning.
-    train_qwen_lora: bool = True
-    # A replacement vision encoder needs a fresh bridge into Qwen space; the
+    # Qvv LoRA and the visual head gives action-expert-only fine-tuning.
+    train_qvv_lora: bool = True
+    # A replacement vision encoder needs a fresh bridge into Qvv space; the
     # released projector was trained on V-JEPA features.
     train_projector: bool = False
     train_action_head: bool = True
@@ -71,8 +71,8 @@ class VLAConfig(ChoiceRegistry):
     # the released single-frame JEPA-WAM checkpoint remains load-compatible.
     ttt_enabled: bool = False
     # ``jepa`` preserves the existing explicit WAM-representation K/V route;
-    # ``action_tokens`` makes each DiT TTT layer derive K/V from its own
-    # action-token stream.
+    # ``action_tokens`` is the compatibility name for implicit DiT K/V; the
+    # separate ttt_action_kv_scope controls selected-token versus full-stream K/V.
     ttt_memory_source: str = "jepa"
     # ``inline`` is the original TTT-in-each-DiT-block implementation;
     # ``wrapper`` is the RoboTTT-style selected-layer adapter.
@@ -83,8 +83,14 @@ class VLAConfig(ChoiceRegistry):
     ttt_carry_between_segments: bool = False
     ttt_require_full_context: bool = False
     ttt_num_register_tokens: int = 16
+    # Legacy wrapper switch; unified scope always includes registers.
+    ttt_wrapper_register_tokens: bool = True
+    # New training default; checkpoint loading without this field uses legacy.
+    ttt_token_scope: str = "state_register_action"
+    # Implicit-memory route: use the complete post-attention DiT stream for K/V.
+    ttt_action_kv_scope: str = "full_dit_tokens"
     # Empty means architecture-specific defaults: all DiT blocks for the
-    # legacy inline route, or (3, 7, 11, 15) for the RoboTTT wrapper route.
+    # inline route, or (3, 7, 11, 15) for the selected-layer wrapper route.
     ttt_layer_indices: Tuple[int, ...] = ()
     ttt_memory_hidden_dim: Optional[int] = None
     # Dimension of the representation written into TTT.  By default this is
@@ -154,6 +160,10 @@ class VLAConfig(ChoiceRegistry):
             raise ValueError("ttt_memory_source must be either 'jepa' or 'action_tokens'.")
         if self.ttt_architecture not in {"inline", "wrapper"}:
             raise ValueError("ttt_architecture must be either 'inline' or 'wrapper'.")
+        if self.ttt_token_scope not in {"legacy", "state_register_action"}:
+            raise ValueError("ttt_token_scope must be 'legacy' or 'state_register_action'.")
+        if self.ttt_action_kv_scope not in {"query_tokens", "full_dit_tokens"}:
+            raise ValueError("ttt_action_kv_scope must be 'query_tokens' or 'full_dit_tokens'.")
         if self.ttt_enabled and self.ttt_context_length < 2:
             raise ValueError("RoboTTT training requires ttt_context_length >= 2.")
         if self.ttt_num_register_tokens < 1:
@@ -169,12 +179,12 @@ class VLAConfig(ChoiceRegistry):
                 raise ValueError("Segmented action-only TTT requires visual_token_pair_offset=0.")
 
 
-Exp_JEPAVLA_Qwen25_VJEPA_0_5B_LIBERO_90 = VLAConfig
+Exp_JEPAVLA_Qvv25_VJEPA_0_5B_LIBERO_90 = VLAConfig
 
 
 @unique
 class VLARegistry(Enum):
-    JEPAVLA_QWEN25_VJEPA_224PX_0_5B_LIBERO_90 = VLAConfig
+    JEPAVLA_QVV25_VJEPA_224PX_0_5B_LIBERO_90 = VLAConfig
 
     @property
     def vla_id(self) -> str:

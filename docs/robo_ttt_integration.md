@@ -38,14 +38,14 @@ attention -> action-token TTT wrapper -> feed-forward network
 Each selected wrapper owns one fast-weight state. Non-selected DiT blocks do
 not receive a TTT state slot and remain part of the pretrained action expert.
 
-V-JEPA, the visual projector, and Qwen are not changed. Each DiT block lets
-the action-token sequence query the Qwen action-placeholder states. TTT then
+V-JEPA, the visual projector, and Qvv are not changed. Each DiT block lets
+the action-token sequence query the Qvv action-placeholder states. TTT then
 uses the post-attention DiT sequence for queries and the WAM prediction for
 memory writes:
 
 ```text
 query:           selected post-attention action-token states
-memory:          WAM(visual Qwen tokens) -> predicted V-JEPA representation (Ŷ)
+memory:          WAM(visual Qvv tokens) -> predicted V-JEPA representation (Ŷ)
 ```
 
 The WAM-predicted V-JEPA representation supplies both memory keys and values;

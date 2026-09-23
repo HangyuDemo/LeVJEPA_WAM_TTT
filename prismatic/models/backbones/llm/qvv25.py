@@ -1,30 +1,32 @@
 """
-qwen2_5.py
+qvv2_5.py
 
-Class definition for all LLMs derived from QwenForCausalLM.
+Class definition for all LLMs derived from QvvForCausalLM.
 """
 
 from typing import Optional, Sequence, Type
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+from prismatic.models.backbones.llm.qvv_compat import Qvv2DecoderLayer
 
 from prismatic.models.backbones.llm.base_llm import HFCausalLLMBackbone
 from prismatic.models.backbones.llm.prompting.base_prompter import PromptBuilder
-from prismatic.models.backbones.llm.prompting.qwen_prompter import QwenPromptBuilder
+from prismatic.models.backbones.llm.prompting.qvv_prompter import QvvPromptBuilder
 
-# Registry =>> Support Qwen-2.5 Models (from HF Transformers)
+# Registry =>> Support Qvv-2.5 Models (from HF Transformers)
 # fmt: off
-QWEN25_MODELS = {
-    "qwen25-0_5b-pure": {
-        "llm_family": "qwen2.5", "llm_cls": AutoModelForCausalLM, "hf_hub_path": "Qwen/Qwen2.5-0.5B"
+QVV25_MODELS = {
+    "qvv25-0_5b-pure": {
+        "llm_family": "qvv2.5", "llm_cls": AutoModelForCausalLM,
+        "hf_hub_path": str(Path(__file__).resolve().parents[4] / "jepa_wam_assets" / "Qvv2.5-0.5B")
     },
 }
 # fmt: on
 
 
-class Qwen25LLMBackbone(HFCausalLLMBackbone):
+class Qvv25LLMBackbone(HFCausalLLMBackbone):
     def __init__(
         self,
         llm_backbone_id: str,
@@ -42,7 +44,7 @@ class Qwen25LLMBackbone(HFCausalLLMBackbone):
             hf_token=hf_token,
             inference_mode=inference_mode,
             use_flash_attention_2=use_flash_attention_2,
-            **QWEN25_MODELS[llm_backbone_id],
+            **QVV25_MODELS[llm_backbone_id],
         )
 
         # add some more special tokens
@@ -51,18 +53,18 @@ class Qwen25LLMBackbone(HFCausalLLMBackbone):
             assert added == num_extra_tokens, f"Added {added} of {num_extra_tokens} extra tokens to tokenizer!"
             print(f"Added {num_extra_tokens} extra tokens.")
 
-        # there is already a special token for Qwen
+        # there is already a special token for Qvv
         # self.tokenizer.add_special_tokens({"pad_token": "<PAD>"})
         self.llm.config.pad_token_id = self.tokenizer.pad_token_id
         self.llm.resize_token_embeddings(len(self.tokenizer), pad_to_multiple_of=64)
 
     @property
     def prompt_builder_fn(self) -> Type[PromptBuilder]:
-        return QwenPromptBuilder
+        return QvvPromptBuilder
 
     @property
     def transformer_layer_cls(self) -> Type[torch.nn.Module]:
-        return Qwen2DecoderLayer
+        return Qvv2DecoderLayer
 
     @property
     def half_precision_dtype(self) -> torch.dtype:

@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import torch
 
 from prismatic.util.action_loss import valid_action_mask
+from prismatic.training.numerics import ensure_finite
 
 
 def detach_fast_weights(value):
@@ -32,6 +33,7 @@ def _slice_time(value, start, end):
 def backward_temporal_segments(
     model, batch, segment_size, accum_divisor=1,
     move_to_device=lambda value: value, autocast_context=nullcontext,
+    backward=True, check_finite=True,
 ):
     """Backward each segment immediately, carrying state only within this batch.
 
@@ -68,7 +70,12 @@ def backward_temporal_segments(
             loss = output["loss"] * weight
         # Free each graph before the next forward. Accumulate slow gradients
         # across segments, then across microbatches in the outer training loop.
-        (loss / accum_divisor).backward()
+        if check_finite:
+            ensure_finite(
+                {"loss": loss, "fast_weights": output["next_fast_weights"]}, f"segment[{start}:{end}]"
+            )
+        if backward:
+            (loss / accum_divisor).backward()
         state = detach_fast_weights(output["next_fast_weights"])
         total_loss = loss.detach() if total_loss is None else total_loss + loss.detach()
         del output, loss, segment
