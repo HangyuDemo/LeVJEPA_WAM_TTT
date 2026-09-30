@@ -97,6 +97,7 @@ class FSDPStrategy(TrainingStrategy):
         epoch: int,
         train_loss: Optional[float] = None,
         only_trainable: bool = True,
+        checkpoint_name: Optional[str] = None,
     ) -> None:
         """Save a checkpoint to the `run_dir` only containing the state_dicts for trainable parameters by default."""
         assert isinstance(self.vlm, FSDP), "FSDPStrategy.save_checkpoint assumes VLM is already wrapped in FSDP!"
@@ -121,7 +122,11 @@ class FSDPStrategy(TrainingStrategy):
             # Save on rank zero *only*
             if overwatch.is_rank_zero():
                 checkpoint_dir = run_dir / "checkpoints"
-                if train_loss is None:
+                if checkpoint_name is not None:
+                    if Path(checkpoint_name).name != checkpoint_name:
+                        raise ValueError("checkpoint_name must be a filename within the checkpoint directory.")
+                    checkpoint_path = checkpoint_dir / checkpoint_name
+                elif train_loss is None:
                     checkpoint_path = checkpoint_dir / f"step-{global_step:06d}-epoch-{epoch:02d}-loss=inf.pt"
                 else:
                     checkpoint_path = (

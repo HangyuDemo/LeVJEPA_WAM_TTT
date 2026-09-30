@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1500" viewBox="0 0 2400 1500" role="img" aria-labelledby="title desc">
+<title id="title">LeVJEPA-WAM-TTT model architecture</title>
+<desc id="desc">End-to-end JEPA-WAM policy, selected DiT block TTT memory, four routes, and temporal segment training.</desc>
+<defs>
+<marker id="arrow-navy" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1 1 L 11 6 L 1 11" fill="none" stroke="#19283D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="arrow-teal" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1 1 L 11 6 L 1 11" fill="none" stroke="#087F83" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="arrow-indigo" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1 1 L 11 6 L 1 11" fill="none" stroke="#5456A9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="arrow-gold" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1 1 L 11 6 L 1 11" fill="none" stroke="#B97924" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+<rect width="2400" height="1500" fill="#FFFFFF"/>
+<text x="60" y="61" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="49" font-weight="750" text-anchor="start">LeVJEPA-WAM-TTT</text>
+<text x="60" y="105" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="500" text-anchor="start">JEPA-conditioned fast-weight memory inside a GR00T-style flow policy</text>
+<rect x="1880" y="48" width="460" height="49" rx="23" fill="#EAF7F5" stroke="#087F83" stroke-width="2"/>
+<text x="2110" y="81" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">Current v4 / four routes</text>
+<rect x="60" y="135" width="2280" height="645" rx="23" fill="#FFFFFF" stroke="#C8D4DF" stroke-width="2.4"/>
+<rect x="87" y="160" width="54" height="54" rx="13" fill="#19283D" stroke="#19283D" stroke-width="0"/>
+<text x="114" y="197" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">A</text>
+<text x="161" y="197" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="700" text-anchor="start">Policy and representation pathways</text>
+<rect x="100" y="254" width="250" height="108" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="225.0" y="297" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">Current views</text>
+<text x="225.0" y="329" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">primary + wrist</text>
+<rect x="430" y="254" width="270" height="108" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="565.0" y="297" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">V-JEPA 2.1</text>
+<text x="565.0" y="329" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">frozen ViT-L</text>
+<rect x="780" y="254" width="245" height="108" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="902.5" y="297" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">Visual bridge</text>
+<text x="902.5" y="329" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">projector</text>
+<rect x="1105" y="245" width="325" height="250" rx="17" fill="#FFFFFF" stroke="#C8D4DF" stroke-width="2.4"/>
+<text x="1267.5" y="288" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">Qvv2.5-0.5B</text>
+<text x="1267.5" y="320" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">causal multimodal</text>
+<text x="1267.5" y="349" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">transformer + LoRA</text>
+<text x="1267.5" y="378" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">visual / action states</text>
+<rect x="1525" y="245" width="310" height="108" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="1680.0" y="288" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">WAM head</text>
+<text x="1680.0" y="320" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">visual states → JEPA</text>
+<rect x="1925" y="245" width="320" height="108" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="2085.0" y="288" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">Predicted JEPA</text>
+<text x="2085.0" y="320" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">Y-hat; available at test</text>
+<rect x="100" y="425" width="250" height="83" rx="17" fill="#F7F9FB" stroke="#C8D4DF" stroke-width="2.4"/>
+<text x="225.0" y="463.5" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">Instruction</text>
+<rect x="1525" y="397" width="310" height="105" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="1680.0" y="440" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" text-anchor="middle">Action states</text>
+<text x="1680.0" y="472" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">placeholder positions</text>
+<rect x="1925" y="418" width="320" height="200" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="2085.0" y="461" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">Flow-GR00T DiT</text>
+<text x="2085.0" y="493" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">16 transformer blocks</text>
+<text x="2085.0" y="522" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">cross-attend to action states</text>
+<text x="2085.0" y="551" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="middle">TTT at selected blocks</text>
+<rect x="100" y="594" width="360" height="98" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="280.0" y="637" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">Proprio + noisy actions</text>
+<text x="280.0" y="669" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="500" text-anchor="middle">state, flow time, action tokens</text>
+<rect x="1937" y="655" width="300" height="91" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="2087.0" y="698" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="middle">20-step action chunk</text>
+<text x="2087.0" y="730" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">4 flow evaluations</text>
+<path d="M 350 308 L 430 308" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 700 308 L 780 308" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 1025 308 L 1105 308" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 1430 303 L 1525 303" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 1835 303 L 1925 303" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 350 466 L 725 466 L 725 421 L 1105 421" fill="none" stroke="#19283D" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-navy)"/>
+<path d="M 1430 445 L 1525 445" fill="none" stroke="#5456A9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-indigo)"/>
+<path d="M 1835 450 L 1925 450" fill="none" stroke="#5456A9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-indigo)"/>
+<path d="M 2085 353 L 2085 418" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<text x="2104" y="387" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="start">K/V (explicit)</text>
+<path d="M 460 644 L 505 644 L 505 711 L 1870 711 L 1870 565 L 1925 565" fill="none" stroke="#5456A9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-indigo)"/>
+<path d="M 2085 618 L 2085 655" fill="none" stroke="#5456A9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-indigo)"/>
+<rect x="550" y="531" width="1180" height="124" rx="18" fill="#FFF5E7" stroke="#B97924" stroke-width="2" stroke-dasharray="10 8"/>
+<text x="579" y="563" fill="#B97924" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start">Base JEPA-WAM pretraining only</text>
+<text x="583" y="605" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="550" text-anchor="start">paired views (t, t+31)  →  frozen V-JEPA target  →  cosine alignment</text>
+<text x="583" y="635" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="500" text-anchor="start">Detached target; TTT-only training uses the current-view prediction above.</text>
+<path d="M 1848 303 L 1873 303 L 1873 516 L 1720 516 L 1720 531" fill="none" stroke="#B97924" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 7" marker-end="url(#arrow-gold)"/>
+<rect x="60" y="816" width="1410" height="414" rx="23" fill="#FFFFFF" stroke="#C8D4DF" stroke-width="2.4"/>
+<rect x="87" y="841" width="54" height="54" rx="13" fill="#19283D" stroke="#19283D" stroke-width="0"/>
+<text x="114" y="878" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">B</text>
+<text x="161" y="878" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="700" text-anchor="start">TTT inside a selected DiT block</text>
+<rect x="97" y="906" width="245" height="96" rx="17" fill="#F7F9FB" stroke="#C8D4DF" stroke-width="2.4"/>
+<text x="219.5" y="949" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" text-anchor="middle">Post-attention</text>
+<text x="219.5" y="981" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="500" text-anchor="middle">hidden states</text>
+<rect x="433" y="906" width="240" height="96" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="553.0" y="949" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">Select Q</text>
+<text x="553.0" y="981" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="500" text-anchor="middle">S + R + A</text>
+<rect x="767" y="895" width="295" height="119" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="914.5" y="938" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" text-anchor="middle">Fast-weight TTT</text>
+<text x="914.5" y="970" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="500" text-anchor="middle">MLP memory write/read</text>
+<rect x="1151" y="906" width="248" height="96" rx="17" fill="#F7F9FB" stroke="#C8D4DF" stroke-width="2.4"/>
+<text x="1275.0" y="949" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="29" font-weight="700" text-anchor="middle">FFN</text>
+<text x="1275.0" y="981" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="500" text-anchor="middle">residual output</text>
+<path d="M 342 954 L 433 954" fill="none" stroke="#19283D" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-navy)"/>
+<path d="M 673 954 L 767 954" fill="none" stroke="#5456A9" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-indigo)"/>
+<path d="M 1062 954 L 1151 954" fill="none" stroke="#087F83" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<rect x="96" y="1028" width="1289" height="176" rx="15" fill="#F7F9FB" stroke="#C8D4DF" stroke-width="1.8"/>
+<text x="126" y="1064" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" text-anchor="start">DiT stream</text>
+<text x="330" y="1064" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="start">[ S  |  R × 16  |  F × 32  |  A × 20 ]</text>
+<text x="126" y="1102" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start">Q + direct residual:</text>
+<text x="394" y="1102" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="start">S = state, R = registers, A = action tokens</text>
+<text x="126" y="1140" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start">K/V:</text>
+<text x="218" y="1140" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="500" text-anchor="start">predicted JEPA Y-hat  /  full post-attention DiT stream</text>
+<text x="1073" y="1140" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="start">F: no direct residual</text>
+<text x="126" y="1178" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" text-anchor="start">Fast update:</text>
+<text x="286" y="1178" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="500" text-anchor="start">delta ← delta − eta · forget · grad MSE(f(K), V);  read f(Q)</text>
+<path d="M 915 1028 L 915 1014" fill="none" stroke="#087F83" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<rect x="1510" y="816" width="830" height="414" rx="23" fill="#FFFFFF" stroke="#C8D4DF" stroke-width="2.4"/>
+<rect x="1537" y="841" width="54" height="54" rx="13" fill="#19283D" stroke="#19283D" stroke-width="0"/>
+<text x="1564" y="878" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">C</text>
+<text x="1611" y="878" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="700" text-anchor="start">Four TTT routes</text>
+<text x="1758" y="901" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="middle">Explicit JEPA K/V</text>
+<text x="2113" y="901" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="middle">Implicit DiT K/V</text>
+<text x="1543" y="995" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" text-anchor="start">Wrapper</text>
+<text x="1543" y="1136" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" text-anchor="start">Inline</text>
+<rect x="1657" y="919" width="258" height="124" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="1786.0" y="962" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">4 blocks</text>
+<text x="1786.0" y="994" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">indices 3, 7, 11, 15</text>
+<text x="1786.0" y="1023" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">WAM-predicted K/V</text>
+<rect x="1982" y="919" width="302" height="124" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="2133.0" y="962" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">4 blocks</text>
+<text x="2133.0" y="994" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">indices 3, 7, 11, 15</text>
+<text x="2133.0" y="1023" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">full DiT K/V</text>
+<rect x="1657" y="1061" width="258" height="124" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="1786.0" y="1104" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">16 blocks</text>
+<text x="1786.0" y="1136" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">all layers</text>
+<text x="1786.0" y="1165" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">WAM-predicted K/V</text>
+<rect x="1982" y="1061" width="302" height="124" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="2133.0" y="1104" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">16 blocks</text>
+<text x="2133.0" y="1136" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">all layers</text>
+<text x="2133.0" y="1165" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">full DiT K/V</text>
+<rect x="60" y="1261" width="2280" height="192" rx="23" fill="#FFFFFF" stroke="#C8D4DF" stroke-width="2.4"/>
+<rect x="87" y="1286" width="54" height="54" rx="13" fill="#19283D" stroke="#19283D" stroke-width="0"/>
+<text x="114" y="1323" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle">D</text>
+<text x="161" y="1323" fill="#19283D" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="700" text-anchor="start">TTT-only training over one 32-observation sequence</text>
+<text x="97" y="1370" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" text-anchor="start">Frozen base policy</text>
+<text x="97" y="1407" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="500" text-anchor="start">Train TTT slow weights + registers</text>
+<rect x="520" y="1341" width="259" height="71" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="649.5" y="1373.5" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">1–8</text>
+<rect x="870" y="1341" width="259" height="71" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="999.5" y="1373.5" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">9–16</text>
+<rect x="1220" y="1341" width="259" height="71" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="1349.5" y="1373.5" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">17–24</text>
+<rect x="1570" y="1341" width="259" height="71" rx="17" fill="#EAF7F5" stroke="#087F83" stroke-width="2.4"/>
+<text x="1699.5" y="1373.5" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" text-anchor="middle">25–32</text>
+<path d="M 787 1376 L 857 1376" fill="none" stroke="#087F83" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 1137 1376 L 1207 1376" fill="none" stroke="#087F83" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<path d="M 1487 1376 L 1557 1376" fill="none" stroke="#087F83" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<text x="819" y="1440" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="600" text-anchor="middle">carry + detach</text>
+<text x="1169" y="1440" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="600" text-anchor="middle">carry + detach</text>
+<text x="1519" y="1440" fill="#087F83" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="600" text-anchor="middle">carry + detach</text>
+<path d="M 1829 1376 L 1919 1376" fill="none" stroke="#19283D" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-navy)"/>
+<rect x="1920" y="1334" width="350" height="85" rx="17" fill="#F0F1FC" stroke="#5456A9" stroke-width="2.4"/>
+<text x="2095.0" y="1377" fill="#5456A9" font-family="Arial, Helvetica, sans-serif" font-size="25" font-weight="700" text-anchor="middle">1 optimizer step</text>
+<text x="2095.0" y="1409" fill="#56677C" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" text-anchor="middle">4 gradients accumulated</text>
+</svg>

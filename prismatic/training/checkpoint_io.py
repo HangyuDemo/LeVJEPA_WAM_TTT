@@ -20,6 +20,8 @@ def save_training_checkpoint(payload, checkpoint_path: Path):
             os.fsync(handle.fileno())
         os.replace(pending, checkpoint_path)
         pending = None
+        if checkpoint_path.name == "latest-checkpoint.pt":
+            return
         # Keep latest as a standalone regular file for existing evaluation tools.
         with tempfile.NamedTemporaryFile(dir=checkpoint_path.parent, prefix=".latest-", suffix=".tmp", delete=False) as handle:
             pending = Path(handle.name)

@@ -247,6 +247,7 @@ class TrainingStrategy(ABC):
         epoch: int,
         train_loss: Optional[float] = None,
         only_trainable: bool = True,
+        checkpoint_name: Optional[str] = None,
     ) -> None: ...
 
     @abstractmethod
