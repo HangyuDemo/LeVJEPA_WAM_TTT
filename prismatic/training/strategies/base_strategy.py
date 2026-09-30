@@ -6,7 +6,6 @@ Shared optimizer, checkpoint, and fixed VLA training-loop logic for the FSDP str
 
 import math
 import json
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Optional
@@ -21,6 +20,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from prismatic.models.vlms import PrismaticVLM
 from prismatic.overwatch import initialize_overwatch
 from prismatic.training.metrics import VLAMetrics
+from prismatic.training.checkpoint_io import preserve_best_checkpoint, prune_step_checkpoints
 from prismatic.training.temporal import backward_temporal_segments
 from prismatic.training.validation import evaluate_action_loss
 from prismatic.training.numerics import ensure_finite
@@ -349,6 +349,7 @@ class TrainingStrategy(ABC):
                 raise ValueError("Held-out validation currently requires single-GPU segmented action-only training.")
             if validation_interval < 1:
                 raise ValueError("validation_interval must be positive.")
+            overwatch.info("Keeping latest for exact resume and best for validation selection.")
             metrics.log(metrics.global_step, validate())
         if check_finite:
             ensure_finite(dict(self.vlm.named_parameters()), "initial_parameters")
@@ -486,27 +487,45 @@ class TrainingStrategy(ABC):
                 and save_interval > 0
                 and (metrics.global_step % save_interval) == 0
             )
-            if (terminate := metrics.global_step >= self.max_steps) or step_save_due or improved:
+            terminate = metrics.global_step >= self.max_steps
+            save_due = terminate or step_save_due or improved
+            if save_due:
                 if check_finite:
                     ensure_finite(
                         {name: param for name, param in self.vlm.named_parameters() if param.requires_grad},
                         "trainable_parameters_before_checkpoint",
                     )
                 self.save_checkpoint(
-                    metrics.run_dir, metrics.global_step, epoch_value, loss.item(), only_trainable=False
+                    metrics.run_dir, metrics.global_step, epoch_value, loss.item(), only_trainable=False,
+                    checkpoint_name="latest-checkpoint.pt",
                 )
-                if improved and overwatch.is_rank_zero():
+                if overwatch.is_rank_zero():
                     checkpoint_dir = metrics.run_dir / "checkpoints"
-                    target = f"step-{metrics.global_step:06d}-epoch-{epoch_value:02d}-loss={loss.item():.4f}.pt"
-                    temporary = checkpoint_dir / ".best-validation-checkpoint.tmp"
-                    temporary.unlink(missing_ok=True)
-                    temporary.symlink_to(target)
-                    os.replace(temporary, checkpoint_dir / "best-validation-checkpoint.pt")
-                    with (metrics.run_dir / "best-validation.json").open("w") as handle:
-                        json.dump({"step": metrics.global_step, "checkpoint": target, **validation_result}, handle, indent=2)
+                    if improved:
+                        preserve_best_checkpoint(
+                            checkpoint_dir / "latest-checkpoint.pt",
+                            checkpoint_dir / "best-validation-checkpoint.pt",
+                        )
+                        with (metrics.run_dir / "best-validation.json").open("w") as handle:
+                            json.dump({
+                                "step": metrics.global_step,
+                                "checkpoint": "best-validation-checkpoint.pt",
+                                **validation_result,
+                            }, handle, indent=2)
+                    elif (checkpoint_dir / "best-validation-checkpoint.pt").is_symlink():
+                        best = checkpoint_dir / "best-validation-checkpoint.pt"
+                        preserve_best_checkpoint(best, best)
+                        metadata_path = metrics.run_dir / "best-validation.json"
+                        if metadata_path.is_file():
+                            with metadata_path.open() as handle:
+                                metadata = json.load(handle)
+                            metadata["checkpoint"] = best.name
+                            with metadata_path.open("w") as handle:
+                                json.dump(metadata, handle, indent=2)
+                    prune_step_checkpoints(checkpoint_dir)
                 dist.barrier()
-                if terminate:
-                    return True
+            if terminate:
+                return True
 
             progress.update()
             progress.set_description(status)

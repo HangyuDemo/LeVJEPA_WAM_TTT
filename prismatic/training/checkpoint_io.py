@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 import torch
@@ -34,3 +35,37 @@ def save_training_checkpoint(payload, checkpoint_path: Path):
     finally:
         if pending is not None:
             pending.unlink(missing_ok=True)
+
+
+def preserve_best_checkpoint(source: Path, best_path: Path):
+    """Atomically retain the best weights independently of a changing latest file.
+
+    A hard link shares disk blocks while latest and best are identical. Replacing
+    latest later leaves the previous best inode intact. Copy only when hard links
+    are unavailable on the checkpoint filesystem.
+    """
+    source, best_path = Path(source).resolve(strict=True), Path(best_path)
+    pending = best_path.parent / f".best-{uuid.uuid4().hex}.tmp"
+    try:
+        try:
+            os.link(source, pending)
+        except OSError:
+            with pending.open("xb") as handle, source.open("rb") as saved:
+                shutil.copyfileobj(saved, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(pending, best_path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def prune_step_checkpoints(checkpoint_dir: Path):
+    """Discard redundant periodic files after latest and best are both safe."""
+    checkpoint_dir = Path(checkpoint_dir)
+    if not (checkpoint_dir / "latest-checkpoint.pt").is_file():
+        raise FileNotFoundError("Cannot prune step checkpoints without latest-checkpoint.pt.")
+    best = checkpoint_dir / "best-validation-checkpoint.pt"
+    if best.is_symlink():
+        preserve_best_checkpoint(best, best)
+    for checkpoint in checkpoint_dir.glob("step-*.pt"):
+        checkpoint.unlink()

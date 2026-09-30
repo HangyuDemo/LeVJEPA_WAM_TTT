@@ -163,19 +163,37 @@ def test_training_loop_validates_saves_best_and_rejects_bad_gradient(tmp_path, m
             return torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), 1)
 
         def save_checkpoint(self, run_dir, global_step, epoch, train_loss, **kwargs):
-            torch.save(self.vlm.state_dict(), run_dir / "checkpoints" /
-                       f"step-{global_step:06d}-epoch-{epoch:02d}-loss={train_loss:.4f}.pt")
+            from prismatic.training.checkpoint_io import save_training_checkpoint
+
+            checkpoint_name = kwargs.get("checkpoint_name") or (
+                f"step-{global_step:06d}-epoch-{epoch:02d}-loss={train_loss:.4f}.pt"
+            )
+            save_training_checkpoint(
+                {"step": global_step, "model": self.vlm.state_dict()},
+                run_dir / "checkpoints" / checkpoint_name,
+            )
 
     monkeypatch.setattr(base.dist, "barrier", lambda: None)
+    validation_losses = iter((0.5, 0.4, 0.6))
+    monkeypatch.setattr(
+        base, "evaluate_action_loss",
+        lambda *args, **kwargs: {"Validation/Loss Action": next(validation_losses)},
+    )
     batch = make_batch(1)
     (tmp_path / "checkpoints").mkdir()
     strategy = Strategy(ScalarPolicy())
     metrics = VLAMetrics(("jsonl",), "test", tmp_path, {})
     strategy.run_vla_training(Sequences(), lambda items: items[0], metrics,
-                              validation_datasets={"spatial": [batch]}, validation_interval=1)
+                              validation_datasets={"spatial": [batch]}, validation_interval=1,
+                              save_interval=1)
     records = [json.loads(line) for line in (tmp_path / "validation-metrics.jsonl").read_text().splitlines()]
     assert [record["step"] for record in records] == [0, 1, 2]
     assert (tmp_path / "checkpoints/best-validation-checkpoint.pt").is_file()
+    assert (tmp_path / "checkpoints/latest-checkpoint.pt").is_file()
+    assert not list((tmp_path / "checkpoints").glob("step-*.pt"))
+    assert torch.load(tmp_path / "checkpoints/latest-checkpoint.pt")["step"] == 2
+    assert torch.load(tmp_path / "checkpoints/best-validation-checkpoint.pt")["step"] == 1
+    assert json.loads((tmp_path / "best-validation.json").read_text())["step"] == 1
     assert metrics.global_step == 2
     assert strategy.vlm.training
 

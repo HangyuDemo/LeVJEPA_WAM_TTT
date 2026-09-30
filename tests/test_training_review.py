@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from prismatic.training.checkpoint_io import save_training_checkpoint
+from prismatic.training.checkpoint_io import (
+    preserve_best_checkpoint,
+    prune_step_checkpoints,
+    save_training_checkpoint,
+)
 from prismatic.training.metrics import VLAMetrics
 
 
@@ -82,6 +86,54 @@ def test_checkpoint_publish_preserves_latest_if_copy_fails(tmp_path, monkeypatch
     assert torch.load(tmp_path / "latest-checkpoint.pt") == {"step": 1}
     assert torch.load(tmp_path / "step-000002.pt") == {"step": 2}
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_latest_and_best_remain_independent_after_latest_advances(tmp_path):
+    latest = tmp_path / "latest-checkpoint.pt"
+    best = tmp_path / "best-validation-checkpoint.pt"
+    save_training_checkpoint({"step": 1}, latest)
+    preserve_best_checkpoint(latest, best)
+    assert sorted(path.name for path in tmp_path.glob("*.pt")) == [
+        "best-validation-checkpoint.pt", "latest-checkpoint.pt",
+    ]
+
+    save_training_checkpoint({"step": 2}, latest)
+    assert torch.load(latest) == {"step": 2}
+    assert torch.load(best) == {"step": 1}
+
+
+def test_interrupted_latest_write_keeps_latest_and_best(tmp_path, monkeypatch):
+    import prismatic.training.checkpoint_io as checkpoint_io
+
+    latest = tmp_path / "latest-checkpoint.pt"
+    best = tmp_path / "best-validation-checkpoint.pt"
+    save_training_checkpoint({"step": 1}, latest)
+    preserve_best_checkpoint(latest, best)
+
+    def interrupted_save(payload, handle):
+        handle.write(b"incomplete checkpoint")
+        raise OSError("simulated interrupted write")
+
+    monkeypatch.setattr(checkpoint_io.torch, "save", interrupted_save)
+    with pytest.raises(OSError, match="interrupted"):
+        save_training_checkpoint({"step": 2}, latest)
+    assert torch.load(latest) == torch.load(best) == {"step": 1}
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_prune_preserves_legacy_best_symlink_target(tmp_path):
+    old_best = tmp_path / "step-000001.pt"
+    old_best.write_bytes(b"best")
+    (tmp_path / "step-000002.pt").write_bytes(b"newer")
+    (tmp_path / "latest-checkpoint.pt").write_bytes(b"latest")
+    best = tmp_path / "best-validation-checkpoint.pt"
+    best.symlink_to(old_best.name)
+
+    prune_step_checkpoints(tmp_path)
+
+    assert best.is_file() and not best.is_symlink()
+    assert best.read_bytes() == b"best"
+    assert not list(tmp_path.glob("step-*.pt"))
 
 
 @pytest.mark.parametrize("gb,interval", [(1, 1000), (4, 250)])

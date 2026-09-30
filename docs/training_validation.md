@@ -53,10 +53,12 @@ JSONL/WandB 指标：
 - `Validation/Valid Action Tokens`、`Validation/Sequences`
 
 每个 run 的 `validation-metrics.jsonl` 保留每次验证结果。
-训练后验证 loss 创新低时额外保存 checkpoint，并更新
-`checkpoints/best-validation-checkpoint.pt` 相对软链接及 `best-validation.json`。
-这个最佳只在有验证结果的训练后 checkpoint 之间选择，启动时的 baseline
-只记日志，不参与最佳选择。latest 仍正常保存，不把旧模型覆盖为最佳模型。
+训练后验证 loss 创新低时更新 `checkpoints/best-validation-checkpoint.pt`
+和 `best-validation.json`。`latest-checkpoint.pt` 按保存间隔及末步更新，
+用于精确续训；best 保留当时的模型，即使后续 latest 前进也不会变化。
+两者相同时优先用硬链接共享磁盘数据，文件系统不支持硬链接时复制。
+不再保留 `step-*.pt`；续训旧 run 时，会先将旧 best 软链接转为独立文件，
+再清理冗余 step 文件。启动时的 baseline 只记日志，不参与最佳选择。
 best_validation_loss 写入 optimizer checkpoint，恢复时一并恢复。
 
 ## 数值检测
