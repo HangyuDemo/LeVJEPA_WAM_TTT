@@ -12,6 +12,27 @@ from prismatic.training.checkpoint_io import (
     save_training_checkpoint,
 )
 from prismatic.training.metrics import VLAMetrics
+from prismatic.util.data_utils import PaddedCollatorForActionPrediction
+
+
+def test_action_collator_accepts_and_validates_temporal_observation_stride():
+    collator = PaddedCollatorForActionPrediction(
+        model_max_length=128,
+        pad_token_id=0,
+        temporal_context_length=16,
+        temporal_observation_stride=8,
+        action_placeholder_tokens=64,
+    )
+    assert collator.temporal_observation_stride == 8
+
+    with pytest.raises(ValueError, match="temporal_observation_stride must be positive"):
+        PaddedCollatorForActionPrediction(
+            model_max_length=128,
+            pad_token_id=0,
+            temporal_context_length=16,
+            temporal_observation_stride=0,
+            action_placeholder_tokens=64,
+        )
 
 
 def test_accumulated_loss_logs_all_microbatches(tmp_path):

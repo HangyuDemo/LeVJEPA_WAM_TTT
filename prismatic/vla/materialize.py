@@ -25,6 +25,7 @@ def get_vla_dataset_and_collator(
     target_action_dim: int = 7,
     target_proprio_dim: int = 8,
     temporal_context_length: int = 1,
+    temporal_observation_stride: int = 1,
     flow_gr00t_placeholder_tokens: int = NUM_TOKENS,
     require_full_context: bool = False,
     validation_percent: int = 0,
@@ -39,6 +40,7 @@ def get_vla_dataset_and_collator(
         flow_gr00t_placeholder_tokens=flow_gr00t_placeholder_tokens,
         visual_token_pair_offset=visual_token_pair_offset,
         temporal_context_length=temporal_context_length,
+        temporal_observation_stride=temporal_observation_stride,
     )
     collator = PaddedCollatorForActionPrediction(
         tokenizer.model_max_length,
@@ -48,6 +50,7 @@ def get_vla_dataset_and_collator(
         target_proprio_dim=target_proprio_dim,
         action_placeholder_tokens=flow_gr00t_placeholder_tokens,
         temporal_context_length=temporal_context_length,
+        temporal_observation_stride=temporal_observation_stride,
     )
     dataset = RLDSDataset(
         data_root_dir,

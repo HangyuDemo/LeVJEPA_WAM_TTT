@@ -52,8 +52,12 @@ class VisualTokenCosineHead(nn.Module):
     def forward(
         self,
         llm_emb: torch.Tensor,
-        target_emb: torch.Tensor,
+        target_emb: torch.Tensor | None = None,
         time_valid_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         projected = self.align_dimension(llm_emb)
+        if target_emb is None:
+            # Projection-only calls must enter forward so FSDP all-gathers
+            # this head's sharded parameters before Linear runs.
+            return projected
         return self.compute_align_loss_cosine(projected, target_emb.detach(), time_valid_mask), projected

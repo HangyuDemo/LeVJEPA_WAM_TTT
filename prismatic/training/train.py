@@ -181,6 +181,7 @@ def build_vla_from_base_vlm(
         ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
         ttt_memory_dim=cfg.vla.ttt_memory_dim,
         ttt_tbptt_step_size=cfg.vla.ttt_tbptt_step_size,
+        ttt_observation_stride=cfg.vla.ttt_observation_stride,
         flow_gr00t_placeholder_tokens=cfg.vla.flow_gr00t_placeholder_tokens,
         lambda_visual_token_cosine=cfg.vla.lambda_visual_token_cosine,
         d_jepa=vision_backbone.embed_dim,
@@ -306,10 +307,8 @@ class TrainConfig:
             raise ValueError("validation_percent must be in [0, 50).")
         if min(self.validation_sequences_per_suite, self.validation_interval, self.parameter_check_interval) < 1:
             raise ValueError("Validation limits/intervals and parameter_check_interval must be positive.")
-        if self.validation_percent and (
-            not self.vla.ttt_carry_between_segments or overwatch.world_size() != 1
-        ):
-            raise ValueError("Validation currently supports single-GPU segmented TTT action-only training.")
+        if self.validation_percent and not self.vla.ttt_carry_between_segments:
+            raise ValueError("Validation requires segmented TTT action-only training.")
 
         # [Validate] Assert on `expected_world_size`
         assert (
@@ -354,6 +353,7 @@ def train(cfg: TrainConfig) -> None:
                     raise ValueError(f"Resume would change {key}; use a new run_id for a new validation recipe.")
             resume_keys = (
                 "ttt_carry_between_segments", "ttt_require_full_context", "ttt_context_length",
+                "ttt_observation_stride",
                 "ttt_tbptt_step_size", "ttt_architecture", "ttt_memory_source",
                 "global_batch_size", "per_device_batch_size", "max_steps", "learning_rate",
             )
@@ -414,6 +414,7 @@ def train(cfg: TrainConfig) -> None:
             ttt_memory_hidden_dim=cfg.vla.ttt_memory_hidden_dim,
             ttt_memory_dim=cfg.vla.ttt_memory_dim,
             ttt_tbptt_step_size=cfg.vla.ttt_tbptt_step_size,
+            ttt_observation_stride=cfg.vla.ttt_observation_stride,
         )
         vlm = vlm.to(dtype=torch.float32)
 
@@ -472,6 +473,7 @@ def train(cfg: TrainConfig) -> None:
         target_proprio_dim=cfg.vla.d_proprio,
         flow_gr00t_placeholder_tokens=cfg.vla.flow_gr00t_placeholder_tokens,
         temporal_context_length=cfg.vla.ttt_context_length,
+        temporal_observation_stride=cfg.vla.ttt_observation_stride,
         require_full_context=cfg.vla.ttt_require_full_context,
         validation_percent=cfg.validation_percent,
         validation_sequences_per_suite=cfg.validation_sequences_per_suite,

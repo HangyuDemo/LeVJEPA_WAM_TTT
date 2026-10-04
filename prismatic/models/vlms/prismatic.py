@@ -75,6 +75,7 @@ class PrismaticVLM(VLM):
         if self.action_placeholder_tokens < 1:
             raise ValueError("flow_gr00t_placeholder_tokens must be positive.")
         self.lambda_visual_token_cosine = kwargs.get("lambda_visual_token_cosine", 0.5)
+        self.ttt_observation_stride = kwargs.get("ttt_observation_stride")
         jepa_dim = kwargs.get("d_jepa", vision_backbone.embed_dim)
         ttt_memory_source = kwargs.get("ttt_memory_source", "jepa")
         ttt_architecture = kwargs.get("ttt_architecture", "wrapper")
@@ -85,7 +86,7 @@ class PrismaticVLM(VLM):
             ttt_memory_dim = None
         if (
             kwargs.get("ttt_enabled", False)
-            and ttt_memory_source == "jepa"
+            and ttt_memory_source in {"jepa", "jepa_current"}
             and ttt_memory_dim != jepa_dim
         ):
             raise ValueError(
@@ -373,6 +374,24 @@ class PrismaticVLM(VLM):
             }
         raise TypeError(f"Unsupported temporal vision input type `{type(value)}`.")
 
+    @staticmethod
+    def _select_ttt_memory_representation(
+        memory_source: str,
+        current_jepa_representation: Optional[torch.Tensor],
+        wam_representation: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if memory_source == "jepa_current":
+            if current_jepa_representation is None:
+                raise RuntimeError("Current-V-JEPA TTT memory was not produced.")
+            return current_jepa_representation
+        if memory_source == "jepa":
+            if wam_representation is None:
+                raise RuntimeError("Future-WAM TTT memory was not produced.")
+            return wam_representation
+        if memory_source == "action_tokens":
+            return None
+        raise ValueError(f"Unsupported TTT memory source: {memory_source!r}.")
+
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -436,6 +455,11 @@ class PrismaticVLM(VLM):
         projector_dtype = next(self.projector.parameters()).dtype
         if patch_features.dtype != projector_dtype:
             patch_features = patch_features.to(dtype=projector_dtype)
+        current_jepa_representation = None
+        if self.action_head.ttt_enabled and self.action_head.ttt_memory_source == "jepa_current":
+            # Frozen V-JEPA tokens for the observation actually seen at this
+            # policy call, including every configured camera view.
+            current_jepa_representation = F.normalize(patch_features, dim=-1)
         projected_patch_embeddings = self.projector(patch_features)
         # The Qvv backbone may be restored in BF16 for inference while the
         # projector itself is kept in FP32.  Cast the projected tokens to the
@@ -517,9 +541,10 @@ class PrismaticVLM(VLM):
         )
         # JEPA-WAM DiT conditioning: use only the action-placeholder hidden
         # states.  These tokens already contain the fused visual, language,
-        # and task context needed by the action expert.  Keep the raw visual
-        # Qvv tokens separate: they are mapped below to the WAM-predicted
-        # JEPA representation and used exclusively as TTT memory.
+        # and task context needed by the action expert. Keep the raw visual
+        # Qvv tokens separate: the legacy `jepa` route maps them to a
+        # WAM-predicted future representation, while `jepa_current` uses the
+        # frozen V-JEPA patch features captured above.
         vl_condition = action_memory
 
         # This is the WAM prediction (Y_hat) in the selected vision-encoder space.  It is computed from
@@ -534,7 +559,15 @@ class PrismaticVLM(VLM):
             # normalize before writing it into fast weights for stable TTT
             # updates while preserving its V-JEPA direction.
             wam_representation = F.normalize(
-                self.visual_token_cosine_head.align_dimension(vision_memory), dim=-1
+                self.visual_token_cosine_head(vision_memory), dim=-1
+            )
+
+        ttt_memory_representation = None
+        if self.action_head.ttt_enabled:
+            ttt_memory_representation = self._select_ttt_memory_representation(
+                self.action_head.ttt_memory_source,
+                current_jepa_representation,
+                wam_representation,
             )
 
         if isinstance(model_pixel_values, torch.Tensor):
@@ -574,15 +607,14 @@ class PrismaticVLM(VLM):
                 proprio,
                 actions,
                 memory_tokens=(
-                    wam_representation.reshape(
-                        batch, time_steps, wam_representation.shape[1], wam_representation.shape[2]
+                    ttt_memory_representation.reshape(
+                        batch,
+                        time_steps,
+                        ttt_memory_representation.shape[1],
+                        ttt_memory_representation.shape[2],
                     )
-                    if self.action_head.ttt_memory_source == "jepa" and temporal and wam_representation is not None
-                    else (
-                        wam_representation
-                        if self.action_head.ttt_memory_source == "jepa" and not temporal
-                        else None
-                    )
+                    if ttt_memory_representation is not None and temporal
+                    else ttt_memory_representation
                 ),
                 time_valid_mask=time_valid_mask,
                 action_valid_mask=action_valid_mask,
@@ -649,6 +681,17 @@ class PrismaticVLM(VLM):
             if temporal
             else vl_condition
         )
+        if ttt_memory_representation is not None:
+            output["ttt_memory_representation"] = (
+                ttt_memory_representation.reshape(
+                    batch,
+                    time_steps,
+                    ttt_memory_representation.shape[1],
+                    ttt_memory_representation.shape[2],
+                )
+                if temporal
+                else ttt_memory_representation
+            )
         if wam_representation is not None:
             output["wam_representation"] = (
                 wam_representation.reshape(

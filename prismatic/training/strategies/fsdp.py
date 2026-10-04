@@ -194,6 +194,16 @@ class FSDPStrategy(TrainingStrategy):
                 param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
             )
 
+        # Record weight-decay classification before FSDP turns each original
+        # parameter into a rank-local (often 1-D) shard.  The identities remain
+        # stable with use_orig_params=True, keeping optimizer groups compatible
+        # across single- and multi-GPU resumes.
+        no_decay_parameter_ids = {
+            id(param)
+            for name, param in self.vlm.named_parameters()
+            if param.requires_grad and (param.ndim <= 1 or name.endswith(".bias"))
+        }
+
         # <FSDP> => note that FSDP will automatically take care of device placement (similar to `autocast`)
         self.vlm = FSDP(
             self.vlm,
@@ -228,7 +238,9 @@ class FSDPStrategy(TrainingStrategy):
         num_training_steps = self.max_steps
 
         num_warmup_steps = int(num_training_steps * self.warmup_ratio)
-        groups = self.build_optimizer_groups(self.vlm.named_parameters())
+        groups = self.build_optimizer_groups(
+            self.vlm.named_parameters(), no_decay_parameter_ids=no_decay_parameter_ids
+        )
         optimizer_groups = [
             {
                 "params": group["params"],

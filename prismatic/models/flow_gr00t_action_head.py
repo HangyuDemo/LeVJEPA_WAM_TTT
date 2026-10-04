@@ -130,9 +130,9 @@ class FlowMatchingActionHead(nn.Module):
             raise ValueError("ttt_memory_hidden_dim must be positive when provided.")
         if ttt_tbptt_step_size is not None and ttt_tbptt_step_size < 1:
             raise ValueError("ttt_tbptt_step_size must be positive or None.")
-        if ttt_memory_source not in {"jepa", "action_tokens"}:
+        if ttt_memory_source not in {"jepa", "jepa_current", "action_tokens"}:
             raise ValueError(
-                "ttt_memory_source must be either 'jepa' or 'action_tokens', "
+                "ttt_memory_source must be 'jepa', 'jepa_current', or 'action_tokens', "
                 f"got {ttt_memory_source!r}."
             )
         if ttt_architecture not in {"inline", "wrapper"}:
@@ -152,16 +152,15 @@ class FlowMatchingActionHead(nn.Module):
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
         self.ttt_memory_source = ttt_memory_source
         self.ttt_architecture = ttt_architecture
-        # The explicit route uses the frozen JEPA representation as K/V. The
-        # implicit route uses the complete post-attention DiT stream at this width.
+        # Both explicit routes use frozen-space JEPA representations as K/V;
+        # the implicit route uses the complete post-attention DiT stream.
         resolved_ttt_memory_dim = (
             self.input_embedding_dim if ttt_memory_source == "action_tokens" else (ttt_memory_dim or self.input_embedding_dim)
         )
         # Put the TTT layers inside the DiT blocks.  This matches RoboTTT's
         # placement: self/cross attention first mixes the current-step tokens,
         # then TTT reads/writes the cross-time state, and the block FFN follows.
-        # The values written by the JEPA-WAM variant still come from the
-        # WAM-predicted V-JEPA representation.
+        # The explicit source selects current V-JEPA or future-WAM tokens.
         resolved_ttt_layer_indices = tuple(ttt_layer_indices) if ttt_layer_indices else None
         diffusion_model_cfg = {
             **action_model_cfg,
@@ -338,8 +337,12 @@ class FlowMatchingActionHead(nn.Module):
             else:
                 flat_memory_tokens = None
 
-        if self.ttt_enabled and self.ttt_memory_source == "jepa" and flat_memory_tokens is None:
-            raise ValueError("TTT-enabled JEPA-WAM action prediction requires predicted JEPA memory_tokens.")
+        if (
+            self.ttt_enabled
+            and self.ttt_memory_source in {"jepa", "jepa_current"}
+            and flat_memory_tokens is None
+        ):
+            raise ValueError("TTT-enabled explicit JEPA memory requires memory_tokens.")
         if self.ttt_memory_source == "action_tokens":
             # This route deliberately does not pass JEPA/WAM representations
             # into TTT. Selected blocks derive K/V from their token stream:
@@ -490,10 +493,9 @@ class FlowMatchingActionHead(nn.Module):
             t_discretized = int(t_cont * self.num_timestep_buckets)
             timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device, dtype=torch.long)
             if self.ttt_enabled:
-                # Experimental mode: every flow-matching denoising evaluation
-                # updates the TTT fast weights.  With the default four flow
-                # steps, one physical observation therefore performs four
-                # consecutive inner-loop updates.
+                # A physical observation is one TTT event. The first Euler
+                # evaluation writes it; later denoising evaluations read the
+                # updated memory without writing the same observation again.
                 pred_velocity, next_fast_weights = self._predict_velocity(
                     vl_embs,
                     actions,
@@ -502,7 +504,7 @@ class FlowMatchingActionHead(nn.Module):
                     memory_tokens=memory_tokens,
                     prev_fast_weights=next_fast_weights,
                     return_fast_weights=True,
-                    update_fast_weights=True,
+                    update_fast_weights=(t == 0),
                 )
             else:
                 pred_velocity = self._predict_velocity(vl_embs, actions, timesteps_tensor, state)

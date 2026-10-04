@@ -273,6 +273,7 @@ def apply_trajectory_transforms(
     goal_relabeling_strategy: Optional[str] = None,
     goal_relabeling_kwargs: dict = {},
     window_size: int = 1,
+    observation_stride: int = 1,
     future_action_window_size: int = 0,
     pair_target_offset: int = 0,
     skip_unlabeled: bool = False,
@@ -293,6 +294,7 @@ def apply_trajectory_transforms(
             no goal relabeling. See `goal_relabeling.py`.
         goal_relabeling_kwargs (dict, optional): Additional keyword arguments to pass to the goal relabeling function.
         window_size (int, optional): The length of the snippets that trajectories are chunked into.
+        observation_stride (int, optional): Physical-frame distance between consecutive observations.
         future_action_window_size (int, optional): The number of future actions beyond window_size to include
             in the chunked actions.
         skip_unlabeled (bool, optional): Whether to skip trajectories with no language labels.
@@ -320,6 +322,7 @@ def apply_trajectory_transforms(
         partial(
             traj_transforms.chunk_act_obs,
             window_size=window_size,
+            observation_stride=observation_stride,
             future_action_window_size=future_action_window_size,
             pair_target_offset=pair_target_offset,
         ),

@@ -315,6 +315,13 @@ bash vla-scripts/run_visual_cosine_primary.sh
 Smoke mode changes only world size, batch size, shuffle-buffer size, and maximum steps. It uses the same model, loss,
 data mixture, pretrained weights, and checkpoint code as the full run.
 
+### LIBERO-Mem training
+
+LIBERO-Mem is registered as a separate RLDS mixture and uses a two-stage
+policy-then-TTT workflow. See [docs/libero_mem_training.md](docs/libero_mem_training.md)
+for dataset validation, exact launch commands, frozen/trainable modules, and
+the action-horizon difference between the paper and the released checkpoint.
+
 To inspect the resolved command without starting training, set `DRY_RUN=1`.
 
 ## LIBERO-Plus Evaluation

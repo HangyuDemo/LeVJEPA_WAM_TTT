@@ -70,14 +70,17 @@ class VLAConfig(ChoiceRegistry):
     # RoboTTT-style action-token fast-weight memory.  Disabled by default so
     # the released single-frame JEPA-WAM checkpoint remains load-compatible.
     ttt_enabled: bool = False
-    # ``jepa`` preserves the existing explicit WAM-representation K/V route;
-    # ``action_tokens`` is the compatibility name for implicit DiT K/V; the
-    # separate ttt_action_kv_scope controls selected-token versus full-stream K/V.
+    # ``jepa`` preserves the explicit future-WAM K/V route; ``jepa_current``
+    # writes current frozen V-JEPA tokens; ``action_tokens`` derives implicit
+    # K/V from the DiT stream.
     ttt_memory_source: str = "jepa"
     # ``inline`` is the original TTT-in-each-DiT-block implementation;
     # ``wrapper`` is the RoboTTT-style selected-layer adapter.
     ttt_architecture: str = "wrapper"
     ttt_context_length: int = 1
+    # Distance, in physical environment frames, between consecutive TTT
+    # observations.  Evaluation must use the same open-loop action count.
+    ttt_observation_stride: int = 1
     # Opt-in round-2 training: context is the TOTAL sequence length. Each
     # forward/backward handles ttt_tbptt_step_size frames and carries state.
     ttt_carry_between_segments: bool = False
@@ -156,8 +159,12 @@ class VLAConfig(ChoiceRegistry):
             raise ValueError("ttt_layer_indices must not contain duplicates.")
         if self.ttt_context_length < 1:
             raise ValueError("ttt_context_length must be positive.")
-        if self.ttt_memory_source not in {"jepa", "action_tokens"}:
-            raise ValueError("ttt_memory_source must be either 'jepa' or 'action_tokens'.")
+        if self.ttt_observation_stride < 1:
+            raise ValueError("ttt_observation_stride must be positive.")
+        if self.ttt_memory_source not in {"jepa", "jepa_current", "action_tokens"}:
+            raise ValueError(
+                "ttt_memory_source must be 'jepa', 'jepa_current', or 'action_tokens'."
+            )
         if self.ttt_architecture not in {"inline", "wrapper"}:
             raise ValueError("ttt_architecture must be either 'inline' or 'wrapper'.")
         if self.ttt_token_scope not in {"legacy", "state_register_action"}:

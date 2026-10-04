@@ -1,11 +1,13 @@
-"""RLDS camera and state mappings for the four public LIBERO suites."""
+"""RLDS camera and state mappings for the public LIBERO datasets."""
 
-LIBERO_DATASETS = (
+LIBERO_STANDARD_DATASETS = (
     "libero_spatial_no_noops",
     "libero_object_no_noops",
     "libero_goal_no_noops",
     "libero_10_no_noops",
 )
+LIBERO_MEM_DATASETS = ("libero_mem",)
+LIBERO_DATASETS = LIBERO_STANDARD_DATASETS + LIBERO_MEM_DATASETS
 
 _LIBERO_CONFIG = {
     "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},

@@ -79,6 +79,7 @@ def load_vla(
     ttt_memory_hidden_dim: Optional[int] = None,
     ttt_memory_dim: Optional[int] = None,
     ttt_tbptt_step_size: Optional[int] = None,
+    ttt_observation_stride: Optional[int] = None,
     **_: object,
 ) -> OpenVLA:
     checkpoint_path = Path(os.path.expanduser(str(model_id_or_path)))
@@ -108,6 +109,7 @@ def load_vla(
         "ttt_memory_hidden_dim": ttt_memory_hidden_dim,
         "ttt_memory_dim": ttt_memory_dim,
         "ttt_tbptt_step_size": ttt_tbptt_step_size,
+        "ttt_observation_stride": ttt_observation_stride,
     }
     vla_cfg.update({key: value for key, value in config_overrides.items() if value is not None})
     if (
@@ -195,6 +197,9 @@ def load_vla(
             else int(vision_backbone.embed_dim)
         ),
         ttt_tbptt_step_size=vla_cfg.get("ttt_tbptt_step_size"),
+        # None marks a legacy checkpoint whose rollout cadence cannot be
+        # verified automatically. New checkpoints always save this field.
+        ttt_observation_stride=vla_cfg.get("ttt_observation_stride"),
         lambda_visual_token_cosine=float(vla_cfg.get("lambda_visual_token_cosine", 0.5)),
         d_jepa=vision_backbone.embed_dim,
     )

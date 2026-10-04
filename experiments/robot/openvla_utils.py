@@ -33,6 +33,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         # representation, so this head must be restored for deployment.
         load_visual_token_cosine_head=True,
     )
+    model.validate_ttt_rollout_stride(cfg.num_open_loop_steps)
     return model.eval().to(DEVICE)
 
 

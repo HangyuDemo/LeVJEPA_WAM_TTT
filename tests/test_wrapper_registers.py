@@ -8,7 +8,7 @@ from prismatic.models.flow_matching_head.cross_attention_dit import RoboTTTStyle
 from prismatic.models.vlms.prismatic import PrismaticVLM
 
 
-@pytest.mark.parametrize("source", ["jepa", "action_tokens"])
+@pytest.mark.parametrize("source", ["jepa", "jepa_current", "action_tokens"])
 @pytest.mark.parametrize("prefix", [0, 3])
 def test_wrapper_exact_selection_and_residual(source, prefix):
     wrapper = RoboTTTStyleActionWrapper(8, 12, memory_dim=8, memory_source=source,
@@ -20,7 +20,7 @@ def test_wrapper_exact_selection_and_residual(source, prefix):
         def forward(self, tokens, memory_tokens, **kwargs):
             torch.testing.assert_close(tokens, torch.cat((x[:, :prefix], x[:, -2:]), dim=1))
             assert kwargs.get("kv_tokens") is None
-            if source == "jepa":
+            if source in {"jepa", "jepa_current"}:
                 assert memory_tokens is external
             else:
                 assert memory_tokens is None
@@ -29,7 +29,10 @@ def test_wrapper_exact_selection_and_residual(source, prefix):
     wrapper.memory = Spy()
     out, state = wrapper(x, action_token_count=2, memory_tokens=external, time_steps=1)
     expected = x.clone()
-    expected[:, :prefix] += 1
+    # Legacy explicit JEPA scope applies the recurrent residual to actions
+    # only; implicit scope also applies it to the selected prefix.
+    if source == "action_tokens":
+        expected[:, :prefix] += 1
     expected[:, -2:] += 1
     torch.testing.assert_close(out, expected)
     assert state == "state"
@@ -59,7 +62,7 @@ def test_wrapper_full_dit_implicit_kv_keeps_selected_queries_and_residual():
     assert state == "state"
 
 
-@pytest.mark.parametrize("source", ["jepa", "action_tokens"])
+@pytest.mark.parametrize("source", ["jepa", "jepa_current", "action_tokens"])
 def test_register_gradient_through_frozen_dit_and_memory(source):
     torch.manual_seed(7)
     dit = DiT(input_embedding_dim=8, num_attention_heads=2, attention_head_dim=4,
@@ -78,7 +81,7 @@ def test_register_gradient_through_frozen_dit_and_memory(source):
     memory = torch.randn(2, 3, 8)
     out, states = dit(x, encoder_hidden_states=memory, timestep=torch.zeros(2, dtype=torch.long),
                       time_steps=2, ttt_memory_source=source, ttt_action_token_count=2,
-                      ttt_memory_tokens=memory if source == "jepa" else None,
+                      ttt_memory_tokens=memory if source in {"jepa", "jepa_current"} else None,
                       return_fast_weights=True)
     out[:, -2:].square().mean().backward()
     assert registers.grad is not None and torch.isfinite(registers.grad).all()

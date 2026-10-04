@@ -19,10 +19,13 @@ def test_segmented_config_rejects_unsupported_shapes_and_visual_loss():
     kwargs = dict(ttt_enabled=True, ttt_carry_between_segments=True, ttt_context_length=32,
                   ttt_tbptt_step_size=8, visual_token_pair_offset=0)
     VLAConfig(**kwargs)
+    VLAConfig(**{**kwargs, "ttt_memory_source": "jepa_current"})
     with pytest.raises(ValueError, match="divisible"):
         VLAConfig(**{**kwargs, "ttt_context_length":33})
     with pytest.raises(ValueError, match="visual_token_pair_offset"):
         VLAConfig(**{**kwargs, "visual_token_pair_offset":31})
+    with pytest.raises(ValueError, match="ttt_observation_stride"):
+        VLAConfig(**{**kwargs, "ttt_observation_stride": 0})
 
 
 def make_batch(batch_size=2, time=8):
@@ -122,7 +125,7 @@ class TinyTTTPolicy(torch.nn.Module):
         pred, state = self.model(
             actions.reshape(batch * time, horizon, dim), encoder_hidden_states=memory,
             timestep=torch.zeros(batch * time, dtype=torch.long), time_steps=time,
-            ttt_memory_tokens=memory if self.source == "jepa" else None,
+            ttt_memory_tokens=memory if self.source in {"jepa", "jepa_current"} else None,
             ttt_action_token_count=horizon, ttt_memory_source=self.source,
             time_valid_mask=time_valid_mask, prev_fast_weights=prev_fast_weights,
             return_fast_weights=True,
@@ -132,8 +135,8 @@ class TinyTTTPolicy(torch.nn.Module):
 
 
 @pytest.mark.parametrize("architecture", ["inline", "wrapper"])
-@pytest.mark.parametrize("memory_source", ["jepa", "action_tokens"])
-def test_four_routes_carry_detached_state_reset_and_keep_backbone_frozen(architecture, memory_source):
+@pytest.mark.parametrize("memory_source", ["jepa", "jepa_current", "action_tokens"])
+def test_six_routes_carry_detached_state_reset_and_keep_backbone_frozen(architecture, memory_source):
     torch.manual_seed(7)
     policy = TinyTTTPolicy(architecture, memory_source)
     batch = make_batch()
@@ -199,3 +202,33 @@ def test_full_context_windows_never_cross_episode_and_preserve_tail_mask():
         assert windows.min() >= offset and windows.max() <= offset + 6
         assert (windows[:, 1:] - windows[:, :-1] == 1).all()
         assert item["action_valid_mask"][-1].numpy().tolist() == [True, True, True, True, False, False]
+
+
+def test_strided_context_matches_open_loop_rollout_cadence():
+    import tensorflow as tf
+    from prismatic.vla.datasets.rlds.traj_transforms import chunk_act_obs
+
+    values = tf.range(15, dtype=tf.float32)
+    trajectory = dict(
+        action=values[:, None],
+        observation={"proprio": values[:, None]},
+        task={"instruction": tf.fill([15], "task")},
+        dataset_name=tf.fill([15], "libero"),
+        absolute_action_mask=tf.zeros([15, 1], tf.bool),
+    )
+
+    item = chunk_act_obs(trajectory, 4, 2, observation_stride=3)
+    keep = tf.reduce_all(item["observation"]["pad_mask"], axis=-1)
+    windows = tf.boolean_mask(item["observation"]["proprio"], keep).numpy()
+    actions = tf.boolean_mask(item["action"], keep).numpy()
+
+    assert windows.shape == (6, 4, 1)
+    assert (windows[:, 1:] - windows[:, :-1] == 3).all()
+    assert actions.shape == (6, 4, 3, 1)
+    assert (actions[0, :, 0, 0] == windows[0, :, 0]).all()
+    assert item["action_valid_mask"][-1].numpy().tolist() == [
+        [True, True, True],
+        [True, True, True],
+        [True, True, True],
+        [True, False, False],
+    ]

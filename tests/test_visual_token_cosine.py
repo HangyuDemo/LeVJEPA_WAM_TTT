@@ -1,5 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import torch
 
 from prismatic.conf.vla import Exp_JEPAVLA_Qvv25_VJEPA_0_5B_LIBERO_90
@@ -7,6 +9,7 @@ from prismatic.models.action_heads import VisualTokenCosineHead
 from prismatic.models.flow_matching_head.cross_attention_dit import TemporalTTTLayer
 from prismatic.models.flow_gr00t_action_head import FlowMatchingActionHead
 from prismatic.models.vlms.prismatic import PrismaticVLM
+from prismatic.models.vlas.openvla import OpenVLA
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,16 @@ def test_visual_token_cosine_uses_trainable_mlp_and_detached_vjepa_target() -> N
     assert head.fc1.weight.grad is not None
     assert head.fc2.weight.grad is not None
     assert vjepa_target.grad is None
+
+
+def test_visual_token_cosine_projection_only_uses_forward() -> None:
+    torch.manual_seed(13)
+    head = VisualTokenCosineHead(d_llm=8, d_target=12)
+    llm_visual_tokens = torch.randn(2, 6, 8)
+
+    projected = head(llm_visual_tokens)
+
+    torch.testing.assert_close(projected, head.align_dimension(llm_visual_tokens))
 
 
 def test_visual_token_cosine_is_zero_for_identical_normalized_embeddings() -> None:
@@ -53,6 +66,17 @@ def test_action_memory_uses_last_sequence_tokens_per_sample() -> None:
 
     torch.testing.assert_close(selected[0, :, 0], torch.tensor([7.0, 8.0, 9.0]))
     torch.testing.assert_close(selected[1, :, 0], torch.tensor([17.0, 18.0, 19.0]))
+
+
+def test_explicit_ttt_memory_selects_current_or_future_jepa_without_mixing_them() -> None:
+    current = torch.randn(2, 4, 8)
+    future = torch.randn(2, 4, 8)
+
+    assert PrismaticVLM._select_ttt_memory_representation("jepa_current", current, future) is current
+    assert PrismaticVLM._select_ttt_memory_representation("jepa", current, future) is future
+    assert PrismaticVLM._select_ttt_memory_representation("action_tokens", current, future) is None
+    with pytest.raises(RuntimeError, match="Current-V-JEPA"):
+        PrismaticVLM._select_ttt_memory_representation("jepa_current", None, future)
 
 
 def test_action_loss_ignores_padded_chunk_targets(monkeypatch) -> None:
@@ -115,7 +139,7 @@ def test_temporal_ttt_can_read_a_rollout_state_without_writing_it_again() -> Non
     torch.testing.assert_close(read_state.step, torch.ones(2, dtype=torch.long))
 
 
-def test_inference_updates_ttt_on_each_denoising_step() -> None:
+def test_inference_updates_ttt_once_per_observation() -> None:
     head = FlowMatchingActionHead.__new__(FlowMatchingActionHead)
     torch.nn.Module.__init__(head)
     # predict_action uses the encoder's dtype, even with a mocked predictor.
@@ -153,7 +177,18 @@ def test_inference_updates_ttt_on_each_denoising_step() -> None:
     )
 
     assert actions.shape == (1, 2, 1)
-    assert update_flags == [True, True, True, True]
+    assert update_flags == [True, False, False, False]
+
+
+def test_ttt_checkpoint_rejects_a_different_rollout_stride() -> None:
+    model = OpenVLA.__new__(OpenVLA)
+    torch.nn.Module.__init__(model)
+    model.action_head = SimpleNamespace(ttt_enabled=True)
+    model.ttt_observation_stride = 8
+
+    model.validate_ttt_rollout_stride(8)
+    with pytest.raises(ValueError, match="rollout cadence mismatch"):
+        model.validate_ttt_rollout_stride(7)
 
 
 def test_temporal_visual_alignment_ignores_padding_timesteps() -> None:
@@ -274,6 +309,7 @@ def test_vla_scripts_only_expose_training_and_evaluation_launchers() -> None:
         "libero_plus_ttt.sh",
         "libero_standard.sh",
         "run_levjepa_wam.sh",
+        "run_libero_mem.sh",
         "run_visual_cosine_primary.sh",
         "ttt_round2_config.sh",
     ]

@@ -227,12 +227,27 @@ class TrainingStrategy(ABC):
             metrics["System/Cgroup Memory Percent"] = 100.0 * cgroup_current / cgroup_limit
         return metrics
 
-    def build_optimizer_groups(self, named_parameters):
+    def build_optimizer_groups(self, named_parameters, no_decay_parameter_ids=None):
+        """Build stable AdamW groups.
+
+        With FSDP ``use_orig_params=True``, an original multi-dimensional
+        parameter can be exposed as a one-dimensional local shard after the
+        model is wrapped.  Classifying that shard by ``param.ndim`` therefore
+        changes the optimizer-group layout when resuming a single-GPU
+        checkpoint with multiple GPUs.  FSDP preserves the original Parameter
+        objects, so callers may provide the identities classified before
+        wrapping.
+        """
         decay, no_decay = [], []
         for name, param in named_parameters:
             if not param.requires_grad:
                 continue
-            (no_decay if param.ndim <= 1 or name.endswith(".bias") else decay).append(param)
+            is_no_decay = (
+                id(param) in no_decay_parameter_ids
+                if no_decay_parameter_ids is not None
+                else param.ndim <= 1 or name.endswith(".bias")
+            )
+            (no_decay if is_no_decay else decay).append(param)
         groups = [
             {"params": decay, "weight_decay": self.weight_decay, "base_lr": self.learning_rate, "min_lr": self.min_learning_rate, "name": "decay"},
             {"params": no_decay, "weight_decay": 0.0, "base_lr": self.learning_rate, "min_lr": self.min_learning_rate, "name": "no-decay"},
@@ -345,10 +360,15 @@ class TrainingStrategy(ABC):
             return result
 
         if validation_datasets:
-            if overwatch.world_size() != 1 or getattr(self, "ttt_segment_size", None) is None:
-                raise ValueError("Held-out validation currently requires single-GPU segmented action-only training.")
+            if getattr(self, "ttt_segment_size", None) is None:
+                raise ValueError("Held-out validation requires segmented TTT action-only training.")
             if validation_interval < 1:
                 raise ValueError("validation_interval must be positive.")
+            if overwatch.world_size() > 1:
+                overwatch.info(
+                    "Distributed validation: sharding fixed held-out sequences across %d ranks.",
+                    overwatch.world_size(),
+                )
             overwatch.info("Keeping latest for exact resume and best for validation selection.")
             metrics.log(metrics.global_step, validate())
         if check_finite:
@@ -487,7 +507,13 @@ class TrainingStrategy(ABC):
                 and save_interval > 0
                 and (metrics.global_step % save_interval) == 0
             )
-            terminate = metrics.global_step >= self.max_steps
+            # A single-GPU run can hand off to a queued multi-GPU job at the
+            # next complete optimizer step, without waiting for save_interval.
+            handoff_requested = (
+                overwatch.world_size() == 1
+                and (metrics.run_dir / ".handoff-request").is_file()
+            )
+            terminate = metrics.global_step >= self.max_steps or handoff_requested
             save_due = terminate or step_save_due or improved
             if save_due:
                 if check_finite:
@@ -525,6 +551,8 @@ class TrainingStrategy(ABC):
                     prune_step_checkpoints(checkpoint_dir)
                 dist.barrier()
             if terminate:
+                if handoff_requested:
+                    overwatch.info("Saved step %d for the multi-GPU handoff; stopping this run.", metrics.global_step)
                 return True
 
             progress.update()

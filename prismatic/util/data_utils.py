@@ -73,6 +73,7 @@ class PaddedCollatorForActionPrediction:
     target_action_dim: int | None = None
     target_proprio_dim: int | None = None
     temporal_context_length: int = 1
+    temporal_observation_stride: int = 1
     action_placeholder_tokens: int = NUM_TOKENS
 
     def __post_init__(self) -> None:
@@ -87,6 +88,8 @@ class PaddedCollatorForActionPrediction:
             )
         if self.temporal_context_length < 1:
             raise ValueError("temporal_context_length must be positive.")
+        if self.temporal_observation_stride < 1:
+            raise ValueError("temporal_observation_stride must be positive.")
 
     def _truncate_input_ids(self, tokens: torch.Tensor) -> torch.Tensor:
         """Keep the action-placeholder suffix when a prompt exceeds context length."""

@@ -65,6 +65,7 @@ class VLABatchTransform:
     flow_gr00t_placeholder_tokens: int = NUM_TOKENS
     visual_token_pair_offset: int = 31
     temporal_context_length: int = 1
+    temporal_observation_stride: int = 1
 
     @staticmethod
     def _wrist_keys(observation: Dict[str, Any], paired: bool = False) -> list[str]:
@@ -76,6 +77,8 @@ class VLABatchTransform:
         context = self.temporal_context_length
         if context < 1:
             raise ValueError("temporal_context_length must be positive.")
+        if self.temporal_observation_stride < 1:
+            raise ValueError("temporal_observation_stride must be positive.")
         if observation["image_primary"].shape[0] != context:
             raise ValueError(
                 f"Expected {context} observation frames, got {observation['image_primary'].shape[0]}."
@@ -98,14 +101,24 @@ class VLABatchTransform:
         }
 
         actions = rlds_batch["action"]
-        expected_action_length = context + NUM_ACTIONS_CHUNK - 1
-        if actions.shape[0] != expected_action_length:
-            raise ValueError(
-                f"Expected {expected_action_length} action entries for context={context}, got {actions.shape[0]}."
-            )
-        if context == 1:
+        strided_temporal_actions = context > 1 and self.temporal_observation_stride > 1
+        if strided_temporal_actions:
+            expected_action_shape = (context, NUM_ACTIONS_CHUNK)
+            if tuple(actions.shape[:2]) != expected_action_shape:
+                raise ValueError(
+                    f"Expected strided action chunks shaped {expected_action_shape}, got {actions.shape[:2]}."
+                )
             output["actions"] = actions
         else:
+            expected_action_length = context + NUM_ACTIONS_CHUNK - 1
+            if actions.shape[0] != expected_action_length:
+                raise ValueError(
+                    f"Expected {expected_action_length} action entries for context={context}, "
+                    f"got {actions.shape[0]}."
+                )
+        if context == 1:
+            output["actions"] = actions
+        elif not strided_temporal_actions:
             output["actions"] = np.stack(
                 [actions[index : index + NUM_ACTIONS_CHUNK] for index in range(context)], axis=0
             )
@@ -133,7 +146,7 @@ class VLABatchTransform:
             action_valid_mask = rlds_batch["action_valid_mask"]
             output["action_valid_mask"] = (
                 action_valid_mask
-                if context == 1
+                if context == 1 or strided_temporal_actions
                 else np.stack(
                     [action_valid_mask[index : index + NUM_ACTIONS_CHUNK] for index in range(context)], axis=0
                 )
@@ -194,16 +207,22 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 20_000,
         visual_token_pair_offset: int = 31,
         temporal_context_length: int = 1,
+        temporal_observation_stride: int = 1,
         require_full_context: bool = False,
         validation_percent: int = 0,
         validation_sequences_per_suite: int = 16,
     ) -> None:
-        if data_mix != "libero_4_task_suites_no_noops":
-            raise ValueError("The public recipe only supports `libero_4_task_suites_no_noops`.")
+        if data_mix not in OXE_NAMED_MIXTURES:
+            raise ValueError(
+                f"Unsupported data mixture `{data_mix}`. "
+                f"Available mixtures: {sorted(OXE_NAMED_MIXTURES)}."
+            )
 
         self.batch_transform = batch_transform
         if temporal_context_length < 1:
             raise ValueError("temporal_context_length must be positive.")
+        if temporal_observation_stride < 1:
+            raise ValueError("temporal_observation_stride must be positive.")
         frame_transform_threads = int(os.getenv("VLA_RLDS_FRAME_TRANSFORM_THREADS", "16"))
         if frame_transform_threads <= 0:
             raise ValueError("VLA_RLDS_FRAME_TRANSFORM_THREADS must be positive.")
@@ -224,6 +243,7 @@ class RLDSDataset(IterableDataset):
                     **spec, "builder": builder.info.full_name,
                     "dataset_info_sha256": hashlib.sha256(metadata.read_bytes()).hexdigest(),
                     "validation_window": "middle complete context per episode",
+                    "temporal_observation_stride": temporal_observation_stride,
                     "validation_max_sequences": validation_sequences_per_suite,
                     "normalization": "existing full-dataset statistics retained for pretrained action compatibility",
                 }
@@ -235,6 +255,7 @@ class RLDSDataset(IterableDataset):
         }
         trajectory_kwargs = {
             "window_size": temporal_context_length,
+            "observation_stride": temporal_observation_stride,
             "future_action_window_size": NUM_ACTIONS_CHUNK - 1,
             "pair_target_offset": visual_token_pair_offset,
             "skip_unlabeled": True,

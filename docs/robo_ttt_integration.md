@@ -20,9 +20,14 @@ override these defaults.  The two architectures use separate fast-weight
 state layouts: 16 states for the default 16-block inline path versus 4 states
 for the default wrapper path.
 
-Both architectures support `ttt_memory_source="jepa"` and
-`ttt_memory_source="action_tokens"`; only the memory source changes, not the
-parameter-freezing or temporal-state mechanism.
+Both architectures support three memory-source settings; only the memory
+source changes, not the parameter-freezing or temporal-state mechanism:
+
+- `jepa_current`: normalized frozen V-JEPA patch tokens from the current
+  observation (all configured camera views). This is the Round-4 explicit
+  route.
+- `jepa`: the legacy WAM-predicted future V-JEPA representation.
+- `action_tokens`: the implicit post-attention DiT-token route.
 
 ## Placement
 
@@ -40,19 +45,21 @@ not receive a TTT state slot and remain part of the pretrained action expert.
 
 V-JEPA, the visual projector, and Qvv are not changed. Each DiT block lets
 the action-token sequence query the Qvv action-placeholder states. TTT then
-uses the post-attention DiT sequence for queries and the WAM prediction for
-memory writes:
+uses the post-attention DiT sequence for queries. On the Round-4 explicit
+route, the current observation supplies memory writes directly:
 
 ```text
 query:           selected post-attention action-token states
-memory:          WAM(visual Qvv tokens) -> predicted V-JEPA representation (Ŷ)
+memory K/V:      current RGB views -> frozen V-JEPA -> normalized patch tokens
 ```
 
-The WAM-predicted V-JEPA representation supplies both memory keys and values;
-the paired future target is used only by the alignment loss.
+The current V-JEPA representation supplies both memory keys and values. The
+legacy `jepa` source remains available for experiments that use the
+WAM-predicted future representation. The paired future target is used only by
+the alignment loss and is never passed to TTT.
 
 The layer uses a fast two-layer GELU MLP in the V-JEPA dimension. At every
-environment timestep it updates that MLP's fast weights from the predicted
+environment timestep it updates that MLP's fast weights from the selected
 V-JEPA tokens and retrieves a residual for the post-attention DiT tokens. The
 residual has a near-zero, learned tanh gate, preserving the pretrained DiT
 behavior at initialization. The paired future V-JEPA target (Y) is
@@ -84,13 +91,14 @@ Call the action head with the state returned by the preceding observation:
 actions, fast_weights = action_head.predict_action(
     action_memory,
     proprio,
-    memory_tokens=wam_representation,
+    memory_tokens=current_jepa_representation,
     prev_fast_weights=fast_weights,
     return_fast_weights=True,
 )
 ```
 
-Every Flow-Matching denoising evaluation for an observation updates the current
-fast-weight state. With the default four flow steps, one observation advances
-the TTT state four times. Pass the returned `fast_weights` to the next
-observation and discard them at an episode reset.
+One physical observation is one TTT memory event. With the default four
+Flow-Matching evaluations, the first evaluation writes the observation and
+the remaining three only read the already-updated fast weights. Pass the
+returned `fast_weights` to the next observation and discard them at an episode
+reset.

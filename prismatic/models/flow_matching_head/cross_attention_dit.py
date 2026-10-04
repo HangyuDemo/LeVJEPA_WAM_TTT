@@ -207,9 +207,10 @@ class TemporalTTTLayer(nn.Module):
             q = q_hidden
         elif memory_tokens is None:
             # Backward-compatible path for direct users of TemporalTTTLayer.
-            # Production JEPA-WAM calls always provide predicted V-JEPA tokens.
+            # Production explicit-memory calls provide current or predicted
+            # V-JEPA tokens.
             if self.require_memory_tokens:
-                raise ValueError("This TTT layer requires WAM-predicted JEPA memory_tokens.")
+                raise ValueError("This TTT layer requires explicit JEPA memory_tokens.")
             if self.memory_dim != self.dim:
                 raise ValueError("A JEPA memory tensor is required when memory_dim differs from DiT dim.")
             q, k, v = q_hidden, k_hidden, v_hidden
@@ -225,9 +226,9 @@ class TemporalTTTLayer(nn.Module):
                 )
             q = self.query_to_memory(q_hidden)
             k = self.memory_norm(memory_tokens)
-            # Values remain in the predicted JEPA coordinate system.  The
-            # fast-weight MLP therefore learns from WAM representations, not
-            # RGB frames or DiT hidden states.
+            # Values remain in the selected JEPA coordinate system. The
+            # fast-weight MLP sees current V-JEPA or future-WAM representations,
+            # never RGB frames or DiT hidden states on this explicit route.
             v = memory_tokens
         q, k = self._apply_rope(q, state.step), self._apply_rope(k, state.step)
 
@@ -359,7 +360,7 @@ class RoboTTTStyleActionWrapper(nn.Module):
         action_kv_scope: str = "query_tokens",
     ) -> None:
         super().__init__()
-        if memory_source not in {"jepa", "action_tokens"}:
+        if memory_source not in {"jepa", "jepa_current", "action_tokens"}:
             raise ValueError(f"Unsupported RoboTTT memory source: {memory_source!r}.")
         self.memory_source = memory_source
         if prefix_token_count < 0:
@@ -377,7 +378,7 @@ class RoboTTTStyleActionWrapper(nn.Module):
             dim,
             memory_hidden_dim,
             memory_dim=memory_dim,
-            require_memory_tokens=memory_source == "jepa",
+            require_memory_tokens=memory_source in {"jepa", "jepa_current"},
             learned_forget=learned_forget,
         )
 
@@ -420,7 +421,7 @@ class RoboTTTStyleActionWrapper(nn.Module):
             time_valid_mask=time_valid_mask,
             tbptt_step_size=tbptt_step_size,
         )
-        if self.memory_source == "jepa" and self.token_scope == "legacy":
+        if self.memory_source in {"jepa", "jepa_current"} and self.token_scope == "legacy":
             # JEPA representations remain the memory K/V source, while their
             # readout is applied only to the action-token suffix.
             return torch.cat(
@@ -709,9 +710,9 @@ class DiT(ModelMixin, ConfigMixin):
                 f"got {ttt_architecture!r}."
             )
         self.ttt_architecture = ttt_architecture
-        if ttt_memory_source not in {"jepa", "action_tokens"}:
+        if ttt_memory_source not in {"jepa", "jepa_current", "action_tokens"}:
             raise ValueError(
-                "ttt_memory_source must be either 'jepa' or 'action_tokens', "
+                "ttt_memory_source must be 'jepa', 'jepa_current', or 'action_tokens', "
                 f"got {ttt_memory_source!r}."
             )
         self.ttt_memory_source = ttt_memory_source
@@ -762,7 +763,7 @@ class DiT(ModelMixin, ConfigMixin):
                         self.inner_dim,
                         memory_hidden_dim,
                         memory_dim=memory_dim,
-                        require_memory_tokens=ttt_memory_source == "jepa",
+                        require_memory_tokens=ttt_memory_source in {"jepa", "jepa_current"},
                         learned_forget=ttt_learned_forget,
                     )
             all_blocks += [

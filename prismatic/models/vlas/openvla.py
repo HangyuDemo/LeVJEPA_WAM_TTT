@@ -25,6 +25,17 @@ class OpenVLA(PrismaticVLM):
         """Start a new episode from RoboTTT's learned fast-weight initialization."""
         self._ttt_fast_weights = None
 
+    def validate_ttt_rollout_stride(self, num_open_loop_steps: int) -> None:
+        """Reject deployment cadence that differs from the saved training cadence."""
+        if not self.action_head.ttt_enabled or self.ttt_observation_stride is None:
+            return
+        if num_open_loop_steps != self.ttt_observation_stride:
+            raise ValueError(
+                "TTT rollout cadence mismatch: checkpoint was trained with "
+                f"ttt_observation_stride={self.ttt_observation_stride}, but evaluation would execute "
+                f"num_open_loop_steps={num_open_loop_steps} actions before the next observation."
+            )
+
     @torch.no_grad()
     def predict_action(
         self,
@@ -97,22 +108,28 @@ class OpenVLA(PrismaticVLM):
                 attention_mask=attention_mask,
                 pixel_values=pixel_values,
             )
-            # The action DiT queries the language/task-conditioned action
-            # placeholder tokens through cross-attention.  Keep the WAM JEPA
-            # prediction separate as the TTT memory source.
+            # The action DiT queries language/task-conditioned action tokens.
+            # Explicit TTT memory is returned separately from that stream.
             vl_condition = output.get("vl_condition")
             if vl_condition is None:
                 raise RuntimeError("JEPA-WAM inference did not produce DiT VL conditioning tokens.")
             if self.action_head.ttt_enabled:
-                wam_memory = output.get("wam_representation")
-                if self.action_head.ttt_memory_source == "jepa" and wam_memory is None:
+                explicit_memory = output.get("ttt_memory_representation")
+                if (
+                    self.action_head.ttt_memory_source in {"jepa", "jepa_current"}
+                    and explicit_memory is None
+                ):
                     raise RuntimeError(
-                        "JEPA-memory TTT inference did not produce a predicted JEPA representation."
+                        "Explicit JEPA-memory TTT inference did not produce a memory representation."
                     )
                 normalized_actions, self._ttt_fast_weights = self.action_head.predict_action(
                     vl_condition,
                     normalized_proprio,
-                    memory_tokens=wam_memory if self.action_head.ttt_memory_source == "jepa" else None,
+                    memory_tokens=(
+                        explicit_memory
+                        if self.action_head.ttt_memory_source in {"jepa", "jepa_current"}
+                        else None
+                    ),
                     prev_fast_weights=self._ttt_fast_weights,
                     return_fast_weights=True,
                 )

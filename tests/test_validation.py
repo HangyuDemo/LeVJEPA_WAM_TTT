@@ -1,16 +1,53 @@
 import json
 import random
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 
 from prismatic.training.numerics import ensure_finite
 from prismatic.training.temporal import backward_temporal_segments
 from prismatic.training.validation import evaluate_action_loss, validation_context
 from prismatic.vla.datasets.validation_split import episode_split_spec
 from test_ttt_round2 import TinyTTTPolicy, ScalarPolicy, make_batch
+
+
+class CountingScalarPolicy(ScalarPolicy):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, **kwargs):
+        self.calls += 1
+        return super().forward(**kwargs)
+
+
+def _distributed_validation_worker(rank, world_size, init_file, output_dir):
+    dist.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=30),
+    )
+    try:
+        batches = [make_batch(1) for _ in range(3)]
+        for value, batch in zip((0.5, 1.5, 2.5), batches):
+            batch["actions"].fill_(value)
+        model = CountingScalarPolicy()
+        result = evaluate_action_loss(
+            model, {"distributed": batches}, lambda items: items[0], segment_size=2
+        )
+        Path(output_dir, f"rank-{rank}.json").write_text(
+            json.dumps({"result": result, "calls": model.calls})
+        )
+    finally:
+        dist.destroy_process_group()
 
 
 def test_episode_partitions_are_disjoint_and_exhaustive():
@@ -90,6 +127,30 @@ def test_validation_loss_is_weighted_by_valid_targets():
     assert result["Validation/second/Loss Action"] == 1
     assert result["Validation/Loss Action"] == pytest.approx(1 / 3)
     assert model.weight.grad is None
+
+
+def test_distributed_validation_shards_samples_pads_forwards_and_reduces_metrics(tmp_path):
+    world_size = 2
+    mp.spawn(
+        _distributed_validation_worker,
+        args=(world_size, str(tmp_path / "distributed-init"), str(tmp_path)),
+        nprocs=world_size,
+        join=True,
+    )
+    outputs = [
+        json.loads((tmp_path / f"rank-{rank}.json").read_text())
+        for rank in range(world_size)
+    ]
+    assert outputs[0]["result"] == outputs[1]["result"]
+    result = outputs[0]["result"]
+    assert result["Validation/distributed/Loss Action"] == pytest.approx(5 / 3)
+    assert result["Validation/Loss Action"] == pytest.approx(5 / 3)
+    assert result["Validation/distributed/Sequences"] == 3
+    assert result["Validation/Sequences"] == 3
+    # Three real samples become two synchronized groups. Each sample has four
+    # temporal segments, so both ranks execute eight forwards; rank 1's final
+    # four are padding collectives and do not affect the reduced metrics.
+    assert [output["calls"] for output in outputs] == [8, 8]
 
 
 def test_validation_restores_rng_and_modes_on_exception():

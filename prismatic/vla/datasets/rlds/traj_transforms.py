@@ -16,20 +16,23 @@ def chunk_act_obs(
     window_size: int,
     future_action_window_size: int = 0,
     pair_target_offset: int = 0,
+    observation_stride: int = 1,
 ) -> Dict:
     """
     Chunks actions and observations into the given window_size.
 
     "observation" keys are given a new axis at index 1.
-    "action" is given a new axis (at index 1) of size `window_size + future_action_window_size`
-    containing `window_size - 1` actions from the past, the current action, and
-    `future_action_window_size` actions from the future. Out-of-range actions are
-    replaced by the nearest endpoint and marked False in `action_valid_mask`.
+    Consecutive observations in a window are `observation_stride` physical frames
+    apart. With stride 1, actions retain the legacy overlapping layout. With a
+    larger stride, every observation gets its own contiguous future-action chunk
+    shaped `[window_size, future_action_window_size + 1]`.
     "pad_mask" is added to "observation".
     If `pair_target_offset > 0`, image observations additionally expose a two-frame
     pair `[current, current + pair_target_offset]`, where the second frame is clamped
     to the last valid frame near episode boundaries.
     """
+    if observation_stride < 1:
+        raise ValueError("observation_stride must be positive.")
     traj_len = tf.shape(traj["action"])[0]
     action_dim = traj["action"].shape[-1]
 
@@ -39,20 +42,24 @@ def chunk_act_obs(
 
     # Observation chunk indices
     chunk_indices = tf.broadcast_to(
-        tf.range(-window_size + 1, 1),
+        tf.range(-window_size + 1, 1) * observation_stride,
         [effective_traj_len, window_size],
     ) + tf.broadcast_to(
         tf.range(effective_traj_len)[:, None],
         [effective_traj_len, window_size],
     )
 
-    action_chunk_indices = tf.broadcast_to(
-        tf.range(-window_size + 1, 1 + future_action_window_size),
-        [effective_traj_len, window_size + future_action_window_size],
-    ) + tf.broadcast_to(
-        tf.range(effective_traj_len)[:, None],
-        [effective_traj_len, window_size + future_action_window_size],
-    )
+    if observation_stride == 1 or window_size == 1:
+        action_chunk_indices = tf.broadcast_to(
+            tf.range(-window_size + 1, 1 + future_action_window_size),
+            [effective_traj_len, window_size + future_action_window_size],
+        ) + tf.broadcast_to(
+            tf.range(effective_traj_len)[:, None],
+            [effective_traj_len, window_size + future_action_window_size],
+        )
+    else:
+        action_offsets = tf.range(future_action_window_size + 1)
+        action_chunk_indices = chunk_indices[:, :, None] + action_offsets[None, None, :]
 
     # Clamp observation indices to valid range [0, traj_len - 1]
     floored_chunk_indices = tf.minimum(tf.maximum(chunk_indices, 0), traj_len - 1)
@@ -60,9 +67,10 @@ def chunk_act_obs(
     goal_timestep = tf.fill([effective_traj_len], traj_len - 1)
     action_valid_mask = tf.logical_and(
         action_chunk_indices >= 0,
-        action_chunk_indices <= goal_timestep[:, None],
+        action_chunk_indices <= tf.reshape(goal_timestep, [-1] + [1] * (action_chunk_indices.shape.rank - 1)),
     )
-    floored_action_chunk_indices = tf.minimum(tf.maximum(action_chunk_indices, 0), goal_timestep[:, None])
+    action_endpoint = tf.reshape(goal_timestep, [-1] + [1] * (action_chunk_indices.shape.rank - 1))
+    floored_action_chunk_indices = tf.minimum(tf.maximum(action_chunk_indices, 0), action_endpoint)
 
     old_obs = traj["observation"]
     traj["observation"] = tf.nest.map_structure(lambda x: tf.gather(x, floored_chunk_indices), old_obs)
