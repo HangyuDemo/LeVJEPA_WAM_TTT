@@ -15,6 +15,35 @@ from prismatic.training.metrics import VLAMetrics
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 
 
+def test_materialize_forwards_temporal_observation_stride(monkeypatch, tmp_path):
+    import prismatic.vla.materialize as materialize
+
+    captured = {}
+
+    class FakeDataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    class FakeTokenizer:
+        model_max_length = 128
+        pad_token_id = 0
+
+    monkeypatch.setattr(materialize, "RLDSDataset", FakeDataset)
+    materialize.get_vla_dataset_and_collator(
+        tmp_path,
+        "unused-by-fake-dataset",
+        image_transform=object(),
+        tokenizer=FakeTokenizer(),
+        prompt_builder_fn=object,
+        default_image_resolution=(3, 224, 224),
+        temporal_context_length=16,
+        temporal_observation_stride=8,
+    )
+
+    assert captured["temporal_context_length"] == 16
+    assert captured["temporal_observation_stride"] == 8
+
+
 def test_action_collator_accepts_and_validates_temporal_observation_stride():
     collator = PaddedCollatorForActionPrediction(
         model_max_length=128,

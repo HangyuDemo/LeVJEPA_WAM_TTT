@@ -61,6 +61,7 @@ def get_vla_dataset_and_collator(
         shuffle_buffer_size=shuffle_buffer_size,
         visual_token_pair_offset=visual_token_pair_offset,
         temporal_context_length=temporal_context_length,
+        temporal_observation_stride=temporal_observation_stride,
         validation_percent=validation_percent,
         validation_sequences_per_suite=validation_sequences_per_suite,
     )

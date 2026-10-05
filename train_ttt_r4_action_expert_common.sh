@@ -9,6 +9,7 @@ set -euo pipefail
 R4_WORLD_SIZE="${R4_WORLD_SIZE:-4}"
 R4_GLOBAL_BATCH_SIZE="${R4_GLOBAL_BATCH_SIZE:-4}"
 R4_SAVE_INTERVAL="${R4_SAVE_INTERVAL:-1000}"
+R4_MAX_STEPS="${R4_MAX_STEPS:-40000}"
 R4_NNODES="${R4_NNODES:-1}"
 R4_GPUS_PER_NODE="${R4_GPUS_PER_NODE:-${R4_WORLD_SIZE}}"
 R4_SHUFFLE_BUFFER_SIZE="${R4_SHUFFLE_BUFFER_SIZE:-5000}"
@@ -35,6 +36,7 @@ fi
 [[ "${R4_NNODES}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_NNODES must be a positive integer" >&2; exit 1; }
 [[ "${R4_GPUS_PER_NODE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_GPUS_PER_NODE must be a positive integer" >&2; exit 1; }
 [[ "${R4_SHUFFLE_BUFFER_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_SHUFFLE_BUFFER_SIZE must be a positive integer" >&2; exit 1; }
+[[ "${R4_MAX_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_MAX_STEPS must be a positive integer" >&2; exit 1; }
 [[ "${R4_CONTEXT_FRAMES}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_CONTEXT_FRAMES must be a positive integer" >&2; exit 1; }
 [[ "${R4_OBSERVATION_STRIDE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_OBSERVATION_STRIDE must be a positive integer" >&2; exit 1; }
 (( R4_CONTEXT_FRAMES % R4_OBSERVATION_STRIDE == 0 )) || {
@@ -116,7 +118,7 @@ if [[ "${R4_EFFECTIVE_MEMORY_SOURCE}" == "action_tokens" ]]; then
             echo "Canceled counterpart ${counterpart_id} (${counterpart_name}, ${counterpart_state}); this job owns ${RUN_ID}."
         done < <(
             squeue -h -u "${SLURM_JOB_USER:-ha865618}" --name="${counterpart_name}" \
-                --states=PENDING,CONFIGURING,RUNNING,COMPLETING --format='%A|%T'
+                --states=PENDING,CONFIGURING,RUNNING,COMPLETING --format='%A|%T' 2>/dev/null || true
         )
     fi
 fi
@@ -225,7 +227,7 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --vla.expected_world_size "${R4_WORLD_SIZE}" \
     --vla.global_batch_size "${R4_GLOBAL_BATCH_SIZE}" \
     --vla.per_device_batch_size 1 \
-    --vla.max_steps 40000 \
+    --vla.max_steps "${R4_MAX_STEPS}" \
     --vla.shuffle_buffer_size "${R4_SHUFFLE_BUFFER_SIZE}" \
     --vla.data_mix libero_4_task_suites_no_noops \
     --vla.train_qvv_lora False \
