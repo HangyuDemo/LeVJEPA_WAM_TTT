@@ -8,6 +8,7 @@ set -euo pipefail
 : "${R4_RUN_NOTE:?R4_RUN_NOTE is required}"
 R4_WORLD_SIZE="${R4_WORLD_SIZE:-4}"
 R4_GLOBAL_BATCH_SIZE="${R4_GLOBAL_BATCH_SIZE:-4}"
+R4_PER_DEVICE_BATCH_SIZE="${R4_PER_DEVICE_BATCH_SIZE:-1}"
 R4_SAVE_INTERVAL="${R4_SAVE_INTERVAL:-1000}"
 R4_MAX_STEPS="${R4_MAX_STEPS:-40000}"
 R4_NNODES="${R4_NNODES:-1}"
@@ -35,6 +36,8 @@ fi
 
 [[ "${R4_NNODES}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_NNODES must be a positive integer" >&2; exit 1; }
 [[ "${R4_GPUS_PER_NODE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_GPUS_PER_NODE must be a positive integer" >&2; exit 1; }
+[[ "${R4_PER_DEVICE_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_PER_DEVICE_BATCH_SIZE must be a positive integer" >&2; exit 1; }
+[[ "${R4_GLOBAL_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_GLOBAL_BATCH_SIZE must be a positive integer" >&2; exit 1; }
 [[ "${R4_SHUFFLE_BUFFER_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_SHUFFLE_BUFFER_SIZE must be a positive integer" >&2; exit 1; }
 [[ "${R4_MAX_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_MAX_STEPS must be a positive integer" >&2; exit 1; }
 [[ "${R4_CONTEXT_FRAMES}" =~ ^[1-9][0-9]*$ ]] || { echo "R4_CONTEXT_FRAMES must be a positive integer" >&2; exit 1; }
@@ -73,7 +76,7 @@ BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjep
 INITIAL_CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
 QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 VJEPA_CHECKPOINT="${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt"
-RUN_ID="${R4_RUN_ID_OVERRIDE:-jepa-wam-ttt-r4-${R4_ARCH}-sra16-fullkv-v5-${R4_EFFECTIVE_MEMORY_TAG}-action-expert-vjepa21-frames${R4_CONTEXT_FRAMES}-stride${R4_OBSERVATION_STRIDE}-updates${R4_CONTEXT_UPDATES}-seg8-gb${R4_GLOBAL_BATCH_SIZE}-pb1-steps40000-val5-n16-s7}"
+RUN_ID="${R4_RUN_ID_OVERRIDE:-jepa-wam-ttt-r4-${R4_ARCH}-sra16-fullkv-v5-${R4_EFFECTIVE_MEMORY_TAG}-action-expert-vjepa21-frames${R4_CONTEXT_FRAMES}-stride${R4_OBSERVATION_STRIDE}-updates${R4_CONTEXT_UPDATES}-seg8-gb${R4_GLOBAL_BATCH_SIZE}-pb${R4_PER_DEVICE_BATCH_SIZE}-steps40000-val5-n16-s7}"
 export WANDB_API_KEY='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'
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
@@ -226,7 +229,7 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --run_id_note "${R4_EFFECTIVE_RUN_NOTE}" \
     --vla.expected_world_size "${R4_WORLD_SIZE}" \
     --vla.global_batch_size "${R4_GLOBAL_BATCH_SIZE}" \
-    --vla.per_device_batch_size 1 \
+    --vla.per_device_batch_size "${R4_PER_DEVICE_BATCH_SIZE}" \
     --vla.max_steps "${R4_MAX_STEPS}" \
     --vla.shuffle_buffer_size "${R4_SHUFFLE_BUFFER_SIZE}" \
     --vla.data_mix libero_4_task_suites_no_noops \
