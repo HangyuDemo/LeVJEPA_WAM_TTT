@@ -103,7 +103,9 @@ class TemporalTTTLayer(nn.Module):
         self.memory_to_output = nn.Linear(self.memory_dim, dim)
         # Match robo_ttt's default inner-loop scale: the effective initial rate
         # is softplus(1e-2), rather than an extra fixed multiplier.
-        self.learnable_lr = nn.Parameter(torch.tensor(1e-2))
+        # FSDP cannot safely shard scalar parameters: restored AdamW moments
+        # may remain shape [] while this rank's gradient is shape [1].
+        self.learnable_lr = nn.Parameter(torch.tensor([1e-2]))
         # Match TTTWrapper's small random residual gate initialization.
         self.memory_out_layerscale = nn.Parameter(torch.randn(dim) * 1e-4)
         self.learned_forget = learned_forget

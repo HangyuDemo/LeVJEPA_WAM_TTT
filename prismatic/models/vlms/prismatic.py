@@ -21,6 +21,7 @@ from prismatic.models.backbones.vision import VisionBackbone
 from prismatic.models.flow_gr00t_action_head import FlowMatchingActionHead
 from prismatic.models.vlms.base_vlm import VLM
 from prismatic.overwatch import initialize_overwatch
+from prismatic.util.checkpoint_compat import upgrade_ttt_lr_model_state
 from prismatic.util.nn_utils import MLPProjector
 from prismatic.vla.constants import ACTION_DIM, ACTION_TOKEN_BEGIN_IDX, NUM_ACTIONS_CHUNK, NUM_TOKENS, PROPRIO_DIM
 
@@ -169,6 +170,9 @@ class PrismaticVLM(VLM):
         if "vision_backbone" in model_state_dict.keys():
             vlm.vision_backbone.load_state_dict(model_state_dict["vision_backbone"])
         if "action_head" in model_state_dict:
+            upgraded = upgrade_ttt_lr_model_state(model_state_dict["action_head"])
+            if upgraded:
+                overwatch.info("Upgraded %d legacy scalar TTT learning-rate weights for FSDP resume", upgraded)
             missing, unexpected = vlm.action_head.load_state_dict(
                 model_state_dict["action_head"],
                 # A pretrained non-TTT checkpoint has no parameters for newly

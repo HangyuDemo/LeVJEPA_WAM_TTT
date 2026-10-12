@@ -36,6 +36,7 @@ from prismatic.training.strategies.base_strategy import (
     get_cosine_schedule_with_warmup_and_group_min_lrs,
 )
 from prismatic.training.checkpoint_io import save_training_checkpoint
+from prismatic.util.checkpoint_compat import align_singleton_adamw_moments, upgrade_ttt_lr_optimizer_state
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -159,10 +160,16 @@ class FSDPStrategy(TrainingStrategy):
 
         optimizer_state_dict = training_state.get("optimizer")
         if optimizer_state_dict is not None:
+            upgraded = upgrade_ttt_lr_optimizer_state(optimizer_state_dict)
+            if upgraded:
+                overwatch.info("Upgraded %d legacy scalar TTT AdamW moments for FSDP resume", upgraded)
             optimizer_state_dict = FSDP.optim_state_dict_to_load(
                 self.vlm, self.optimizer, optimizer_state_dict
             )
             self.optimizer.load_state_dict(optimizer_state_dict)
+            local_upgraded = align_singleton_adamw_moments(self.optimizer)
+            if local_upgraded:
+                overwatch.info("Aligned %d scalar AdamW moments to local one-element FSDP shards", local_upgraded)
         if self.lr_scheduler is not None and training_state.get("lr_scheduler") is not None:
             self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
         self.best_validation_loss = training_state.get("best_validation_loss", float("inf"))
@@ -203,6 +210,15 @@ class FSDPStrategy(TrainingStrategy):
             for name, param in self.vlm.named_parameters()
             if param.requires_grad and (param.ndim <= 1 or name.endswith(".bias"))
         }
+
+        scalar_parameters = [
+            name for name, param in self.vlm.named_parameters() if param.requires_grad and param.ndim == 0
+        ]
+        if scalar_parameters:
+            raise ValueError(
+                "FSDP cannot safely resume scalar trainable parameters; use one-element tensors: "
+                f"{scalar_parameters}"
+            )
 
         # <FSDP> => note that FSDP will automatically take care of device placement (similar to `autocast`)
         self.vlm = FSDP(
