@@ -6,6 +6,72 @@ set -euo pipefail
 : "${R4_MEMORY_SOURCE:?R4_MEMORY_SOURCE must be jepa, jepa_current, or action_tokens}"
 : "${R4_MEMORY_TAG:?R4_MEMORY_TAG is required}"
 : "${R4_RUN_NOTE:?R4_RUN_NOTE is required}"
+
+# Job 882699 was submitted as inline-implicit, but is intentionally repurposed
+# at allocation time as the highgpu wrapper-explicit TTT-only counterpart to
+# the TACC WE run.  The submitted launcher sources this file, so this targeted
+# override preserves its queue position without affecting any other job.
+if [[ "${SLURM_JOB_ID:-}" == "882699" ]]; then
+    R4_ARCH=wrapper
+    R4_MEMORY_SOURCE=jepa_current
+    R4_MEMORY_TAG=explicit-current-vjepa-kv
+    R4_RUN_NOTE=r4-wrapper-explicit-current-vjepa-kv-ttt-only-frames128-stride8-updates16-seg8-gb64-pb4-highgpu-4gpu
+    R4_MAX_STEPS=30000
+    R4_TRAIN_ACTION_HEAD=False
+    R4_TRAIN_TTT_ONLY=True
+    R4_LEARNING_RATE=2e-5
+    R4_MIN_LEARNING_RATE=1e-6
+    R4_WEIGHT_DECAY=1e-5
+    R4_TRAINING_TAG=ttt-only
+    R4_WANDB_PROJECT=jepa-wam-ttt-r4-ttt-only-frames128-stride8-gb64
+    R4_RUN_ID_OVERRIDE=jepa-wam-ttt-r4-wrapper-sra16-fullkv-v5-explicit-current-vjepa-kv-ttt-only-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-steps30000-highgpu-4gpu
+elif [[ "${SLURM_JOB_ID:-}" == "882821" ]]; then
+    R4_ARCH=inline
+    R4_MEMORY_SOURCE=jepa_current
+    R4_MEMORY_TAG=explicit-current-vjepa-kv
+    R4_RUN_NOTE=r4-inline-explicit-current-vjepa-kv-ttt-only-frames128-stride8-updates16-seg8-gb64-pb4-highgpu-4gpu
+    R4_MAX_STEPS=30000
+    R4_TRAIN_ACTION_HEAD=False
+    R4_TRAIN_TTT_ONLY=True
+    R4_LEARNING_RATE=2e-5
+    R4_MIN_LEARNING_RATE=1e-6
+    R4_WEIGHT_DECAY=1e-5
+    R4_TRAINING_TAG=ttt-only
+    R4_WANDB_PROJECT=jepa-wam-ttt-r4-ttt-only-frames128-stride8-gb64
+    R4_RUN_ID_OVERRIDE=jepa-wam-ttt-r4-inline-sra16-fullkv-v5-explicit-current-vjepa-kv-ttt-only-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-steps30000-highgpu-4gpu
+elif [[ "${SLURM_JOB_ID:-}" == "898369" || "${SLURM_JOB_ID:-}" == "898647" ]]; then
+    # These already-submitted continuations source this file at allocation time.
+    # Repoint them to the copied TACC implicit runs without losing queue age.
+    if [[ "${SLURM_JOB_ID}" == "898369" ]]; then
+        R4_ARCH=wrapper
+    else
+        R4_ARCH=inline
+    fi
+    R4_MEMORY_SOURCE=action_tokens
+    R4_MEMORY_TAG=implicit-full-dit-kv
+    R4_RUN_NOTE="r4-${R4_ARCH}-implicit-tacc-checkpoint-continuation-frames128-stride8-updates16-seg8-gb64-pb4-highgpu-4gpu"
+    R4_NNODES=1
+    R4_GPUS_PER_NODE=4
+    R4_WORLD_SIZE=4
+    R4_GLOBAL_BATCH_SIZE=64
+    R4_PER_DEVICE_BATCH_SIZE=4
+    R4_SHUFFLE_BUFFER_SIZE=2500
+    R4_SAVE_INTERVAL=500
+    R4_MAX_STEPS=30000
+    R4_CONTEXT_FRAMES=128
+    R4_OBSERVATION_STRIDE=8
+    R4_TRAIN_ACTION_HEAD=False
+    R4_TRAIN_TTT_ONLY=True
+    R4_LEARNING_RATE=2e-5
+    R4_MIN_LEARNING_RATE=1e-6
+    R4_WEIGHT_DECAY=1e-5
+    R4_TRAINING_TAG=ttt-only
+    R4_WANDB_PROJECT=jepa-wam-ttt-r4-ttt-only-frames128-stride8-gb64
+    R4_RUN_ID_OVERRIDE="jepa-wam-ttt-r4-${R4_ARCH}-sra16-fullkv-v5-implicit-full-dit-kv-ttt-only-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-steps30000-tacc-4gpu"
+    R4_REQUIRE_RESUME=1
+    R4_DISABLE_COUNTERPART_CANCEL=1
+fi
+
 R4_WORLD_SIZE="${R4_WORLD_SIZE:-4}"
 R4_GLOBAL_BATCH_SIZE="${R4_GLOBAL_BATCH_SIZE:-4}"
 R4_PER_DEVICE_BATCH_SIZE="${R4_PER_DEVICE_BATCH_SIZE:-1}"
@@ -16,6 +82,13 @@ R4_GPUS_PER_NODE="${R4_GPUS_PER_NODE:-${R4_WORLD_SIZE}}"
 R4_SHUFFLE_BUFFER_SIZE="${R4_SHUFFLE_BUFFER_SIZE:-5000}"
 R4_CONTEXT_FRAMES="${R4_CONTEXT_FRAMES:-128}"
 R4_OBSERVATION_STRIDE="${R4_OBSERVATION_STRIDE:-8}"
+R4_TRAIN_ACTION_HEAD="${R4_TRAIN_ACTION_HEAD:-True}"
+R4_TRAIN_TTT_ONLY="${R4_TRAIN_TTT_ONLY:-False}"
+R4_LEARNING_RATE="${R4_LEARNING_RATE:-2e-4}"
+R4_MIN_LEARNING_RATE="${R4_MIN_LEARNING_RATE:-1e-5}"
+R4_WEIGHT_DECAY="${R4_WEIGHT_DECAY:-0.0}"
+R4_TRAINING_TAG="${R4_TRAINING_TAG:-action-expert}"
+R4_WANDB_PROJECT="${R4_WANDB_PROJECT:-jepa-wam-ttt-r4-action-expert-frames128-stride8-gb${R4_GLOBAL_BATCH_SIZE}}"
 R4_CONTEXT_UPDATES=$((R4_CONTEXT_FRAMES / R4_OBSERVATION_STRIDE))
 R4_EFFECTIVE_MEMORY_SOURCE="${R4_MEMORY_SOURCE}"
 R4_EFFECTIVE_MEMORY_TAG="${R4_MEMORY_TAG}"
@@ -60,9 +133,10 @@ case "${R4_EFFECTIVE_MEMORY_SOURCE}" in
 esac
 
 if [[ "${R4_RESOLVE_ONLY:-0}" == "1" ]]; then
-    printf 'partition=%s source=%s tag=%s frames=%s stride=%s updates=%s\n' \
-        "${R4_LAUNCH_PARTITION}" "${R4_EFFECTIVE_MEMORY_SOURCE}" "${R4_EFFECTIVE_MEMORY_TAG}" \
-        "${R4_CONTEXT_FRAMES}" "${R4_OBSERVATION_STRIDE}" "${R4_CONTEXT_UPDATES}"
+    printf 'partition=%s arch=%s source=%s tag=%s train_action_head=%s train_ttt_only=%s max_steps=%s lr=%s wandb_project=%s frames=%s stride=%s updates=%s\n' \
+        "${R4_LAUNCH_PARTITION}" "${R4_ARCH}" "${R4_EFFECTIVE_MEMORY_SOURCE}" "${R4_EFFECTIVE_MEMORY_TAG}" \
+        "${R4_TRAIN_ACTION_HEAD}" "${R4_TRAIN_TTT_ONLY}" "${R4_MAX_STEPS}" "${R4_LEARNING_RATE}" \
+        "${R4_WANDB_PROJECT}" "${R4_CONTEXT_FRAMES}" "${R4_OBSERVATION_STRIDE}" "${R4_CONTEXT_UPDATES}"
     exit 0
 fi
 
@@ -76,7 +150,7 @@ BASE_VLM_RUN="${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjep
 INITIAL_CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjepa-224px+0_5b+mx-libero-90+n1+b32+x7--visual-cosine-projector-allviews--20260723_232305/checkpoints/step-040000-epoch-37-loss=0.0262.pt"
 QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 VJEPA_CHECKPOINT="${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt"
-RUN_ID="${R4_RUN_ID_OVERRIDE:-jepa-wam-ttt-r4-${R4_ARCH}-sra16-fullkv-v5-${R4_EFFECTIVE_MEMORY_TAG}-action-expert-vjepa21-frames${R4_CONTEXT_FRAMES}-stride${R4_OBSERVATION_STRIDE}-updates${R4_CONTEXT_UPDATES}-seg8-gb${R4_GLOBAL_BATCH_SIZE}-pb${R4_PER_DEVICE_BATCH_SIZE}-steps40000-val5-n16-s7}"
+RUN_ID="${R4_RUN_ID_OVERRIDE:-jepa-wam-ttt-r4-${R4_ARCH}-sra16-fullkv-v5-${R4_EFFECTIVE_MEMORY_TAG}-${R4_TRAINING_TAG}-vjepa21-frames${R4_CONTEXT_FRAMES}-stride${R4_OBSERVATION_STRIDE}-updates${R4_CONTEXT_UPDATES}-seg8-gb${R4_GLOBAL_BATCH_SIZE}-pb${R4_PER_DEVICE_BATCH_SIZE}-steps${R4_MAX_STEPS}-val5-n16-s7}"
 export WANDB_API_KEY='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'
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
@@ -114,7 +188,7 @@ if [[ "${R4_EFFECTIVE_MEMORY_SOURCE}" == "action_tokens" ]]; then
     elif [[ "${R4_LAUNCH_PARTITION}" == "highgpu" ]]; then
         counterpart_name="ttt-r4-${R4_ARCH}-implicit-ae-n1"
     fi
-    if [[ -n "${counterpart_name}" && -n "${SLURM_JOB_ID:-}" ]]; then
+    if [[ -n "${counterpart_name}" && -n "${SLURM_JOB_ID:-}" && "${R4_DISABLE_COUNTERPART_CANCEL:-0}" != 1 ]]; then
         while IFS='|' read -r counterpart_id counterpart_state; do
             [[ -n "${counterpart_id}" && "${counterpart_id}" != "${SLURM_JOB_ID}" ]] || continue
             scancel "${counterpart_id}"
@@ -148,6 +222,10 @@ done
 [[ "${cuda_ready}" -eq 1 ]] || { echo "CUDA remained unavailable after three attempts" >&2; exit 1; }
 
 CHECKPOINT="${RUN_ROOT}/${RUN_ID}/checkpoints/latest-checkpoint.pt"
+if [[ "${R4_REQUIRE_RESUME:-0}" == 1 && ! -s "${CHECKPOINT}" ]]; then
+    echo "Required continuation checkpoint is missing or empty: ${CHECKPOINT}; refusing to start from the public checkpoint." >&2
+    exit 1
+fi
 if [[ -n "${R4_HANDOFF_NORMAL_JOB_ID:-}" ]]; then
     [[ "${R4_WORLD_SIZE}" -eq 4 ]] || { echo "Handoff requires the four-GPU job" >&2; exit 1; }
     if [[ "${R4_EFFECTIVE_MEMORY_SOURCE}" == "jepa" || "${R4_EFFECTIVE_MEMORY_SOURCE}" == "jepa_current" ]]; then
@@ -231,12 +309,15 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --vla.global_batch_size "${R4_GLOBAL_BATCH_SIZE}" \
     --vla.per_device_batch_size "${R4_PER_DEVICE_BATCH_SIZE}" \
     --vla.max_steps "${R4_MAX_STEPS}" \
+    --vla.learning_rate "${R4_LEARNING_RATE}" \
+    --vla.min_learning_rate "${R4_MIN_LEARNING_RATE}" \
+    --vla.weight_decay "${R4_WEIGHT_DECAY}" \
     --vla.shuffle_buffer_size "${R4_SHUFFLE_BUFFER_SIZE}" \
     --vla.data_mix libero_4_task_suites_no_noops \
     --vla.train_qvv_lora False \
     --vla.train_projector False \
-    --vla.train_action_head True \
-    --vla.train_ttt_only False \
+    --vla.train_action_head "${R4_TRAIN_ACTION_HEAD}" \
+    --vla.train_ttt_only "${R4_TRAIN_TTT_ONLY}" \
     --vla.train_visual_token_cosine_head False \
     --vla.ttt_enabled True \
     --vla.ttt_memory_source "${R4_EFFECTIVE_MEMORY_SOURCE}" \
@@ -264,7 +345,7 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --parameter_check_interval 100 \
     --use_swanlab False \
     --use_wandb True \
-    --wandb_project "jepa-wam-ttt-r4-action-expert-frames128-stride8-gb${R4_GLOBAL_BATCH_SIZE}" \
+    --wandb_project "${R4_WANDB_PROJECT}" \
     --wandb_entity hang-yu-team)
 
 if [[ "${R4_NNODES}" -eq 1 ]]; then

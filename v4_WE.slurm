@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stampede3 TACC H100: one Round-4 run on four GPUs.
+# Stampede3 TACC H100: shared Round-4 TTT-only runner on four GPUs.
 #
 # Configuration:
 #   one H100 node / four GPUs, 48 hours
@@ -7,6 +7,8 @@
 #   gradient accumulation = 4
 #   global batch = 4 GPUs * 4 samples * 4 accumulation = 64
 #   physical context = 128 frames, stride = 8 => 16 TTT context updates
+#   optimization = TTT layers/registers only; pretrained action head frozen
+#   default route = wrapper-explicit (overridable by R4_ARCH/R4_MEMORY_SOURCE)
 #
 # Submit from the TACC project directory after activating the JEPA-WAM
 # environment (or set JEPA_PYTHON to its absolute Python executable):
@@ -50,7 +52,7 @@ INITIAL_CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjep
 QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
 VJEPA_CHECKPOINT="${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt"
 
-JEPA_PYTHON="${JEPA_PYTHON:-$(command -v python || true)}"
+JEPA_PYTHON="${JEPA_PYTHON:-/home1/11441/demo23331/miniforge3/envs/jepa-wam/bin/python}"
 TORCHRUN_BIN="$(dirname "${JEPA_PYTHON:-/nonexistent}")/torchrun"
 
 for path in \
@@ -78,7 +80,7 @@ export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 TF_CPP_MIN_LOG_LEVEL=2
 export VLA_RLDS_FRAME_TRANSFORM_THREADS=1
 export WANDB_MODE="${WANDB_MODE:-online}"
 export WANDB_ENTITY="${WANDB_ENTITY:-hang-yu-team}"
-export WANDB_PROJECT="${WANDB_PROJECT:-jepa-wam-ttt-r4-action-expert-frames128-stride8-gb64}"
+export WANDB_PROJECT="${WANDB_PROJECT:-jepa-wam-ttt-r4-ttt-only-frames128-stride8-gb64}"
 
 "${JEPA_PYTHON}" -c 'import torch, wandb; print("torch", torch.__version__, "cuda", torch.cuda.device_count())' || {
     echo "The TACC Python environment cannot import torch/wandb." >&2
@@ -88,8 +90,8 @@ export WANDB_PROJECT="${WANDB_PROJECT:-jepa-wam-ttt-r4-action-expert-frames128-s
 cd "${PROJECT_ROOT}"
 mkdir -p "${RUN_ROOT}" "${LOG_ROOT}"
 
-# New run ID: deliberately separate from the earlier gb16/pb1 run.
-RUN_ID="jepa-wam-ttt-r4-${ARCH}-sra16-fullkv-v5-${MEMORY_TAG}-action-expert-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-tacc-4gpu"
+# Keep every route separate and never resume an earlier action-head-training run.
+RUN_ID="jepa-wam-ttt-r4-${ARCH}-sra16-fullkv-v5-${MEMORY_TAG}-ttt-only-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-steps30000-tacc-4gpu"
 RUN_DIR="${RUN_ROOT}/${RUN_ID}"
 CHECKPOINT="${RUN_DIR}/checkpoints/latest-checkpoint.pt"
 if [[ -f "${CHECKPOINT}" ]]; then
@@ -102,15 +104,11 @@ fi
 
 echo "job=${SLURM_JOB_ID} host=$(hostname) started=$(date)"
 echo "python=${JEPA_PYTHON} data=${DATA_ROOT} run_root=${RUN_ROOT}"
-echo "arch=${ARCH} memory_source=${MEMORY_SOURCE} world_size=4 global_batch=64 per_device_batch=4 gradient_accumulation=4 context_frames=128 stride=8"
+echo "arch=${ARCH} memory_source=${MEMORY_SOURCE} train=ttt-only world_size=4 global_batch=64 per_device_batch=4 gradient_accumulation=4 context_frames=128 stride=8"
 
 # Verify all four GPUs before starting the distributed job.
 srun --nodes=1 --ntasks=1 \
     "${JEPA_PYTHON}" -c 'import torch; expected=4; print("cuda_devices", torch.cuda.device_count()); assert torch.cuda.is_available() and torch.cuda.device_count() == expected; [torch.cuda.synchronize(i) for i in range(expected)]'
-
-MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
-MASTER_PORT="$((20000 + SLURM_JOB_ID % 10000))"
-export MASTER_ADDR MASTER_PORT
 
 TRAIN_ARGS=(--module prismatic.training.train \
     --vla.base_vlm "${BASE_VLM_RUN}" \
@@ -119,17 +117,20 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --vla.vjepa_checkpoint_path "${VJEPA_CHECKPOINT}" \
     --data_root_dir "${DATA_ROOT}" \
     --run_root_dir "${RUN_ROOT}" \
-    --run_id_note "r4-${ARCH}-${MEMORY_TAG}-tacc-4gpu-gb64-frames128-stride8" \
+    --run_id_note "r4-${ARCH}-${MEMORY_TAG}-ttt-only-tacc-4gpu-gb64-frames128-stride8" \
     --vla.expected_world_size 4 \
     --vla.global_batch_size 64 \
     --vla.per_device_batch_size 4 \
-    --vla.max_steps 40000 \
+    --vla.max_steps 30000 \
+    --vla.learning_rate 2e-5 \
+    --vla.min_learning_rate 1e-6 \
+    --vla.weight_decay 1e-5 \
     --vla.shuffle_buffer_size 2500 \
     --vla.data_mix libero_4_task_suites_no_noops \
     --vla.train_qvv_lora False \
     --vla.train_projector False \
-    --vla.train_action_head True \
-    --vla.train_ttt_only False \
+    --vla.train_action_head False \
+    --vla.train_ttt_only True \
     --vla.train_visual_token_cosine_head False \
     --vla.ttt_enabled True \
     --vla.ttt_memory_source "${MEMORY_SOURCE}" \
@@ -160,7 +161,7 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --wandb_project "${WANDB_PROJECT}" \
     --wandb_entity "${WANDB_ENTITY}")
 
-echo "Launching ${ARCH}-${MEMORY_TAG} on four GPUs; rendezvous=${MASTER_ADDR}:${MASTER_PORT}"
+echo "Launching ${ARCH}-${MEMORY_TAG} TTT-only on four GPUs"
 srun --nodes=1 --ntasks=1 --kill-on-bad-exit=1 \
     "${TORCHRUN_BIN}" --standalone --nnodes=1 --nproc-per-node=4 \
     "${TRAIN_ARGS[@]}"
