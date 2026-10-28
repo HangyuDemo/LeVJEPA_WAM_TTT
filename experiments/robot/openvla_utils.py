@@ -34,6 +34,27 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         load_visual_token_cosine_head=True,
     )
     model.validate_ttt_rollout_stride(cfg.num_open_loop_steps)
+    fm_steps_override = os.environ.get("FM_NUM_INFERENCE_TIMESTEPS")
+    if fm_steps_override is not None:
+        fm_steps = int(fm_steps_override)
+        if fm_steps < 1:
+            raise ValueError("FM_NUM_INFERENCE_TIMESTEPS must be positive.")
+        model.action_head.num_inference_timesteps = fm_steps
+    updates = getattr(cfg, "ttt_inference_updates", 1)
+    if not 1 <= updates <= model.action_head.num_inference_timesteps:
+        raise ValueError(
+            "ttt_inference_updates must be between 1 and "
+            f"num_inference_timesteps={model.action_head.num_inference_timesteps}, got {updates}."
+        )
+    model.action_head.ttt_inference_updates = updates
+    fixed_position = os.environ.get("TTT_INFERENCE_FIXED_OBSERVATION_POSITION", "0")
+    if fixed_position not in {"0", "1"}:
+        raise ValueError("TTT_INFERENCE_FIXED_OBSERVATION_POSITION must be 0 or 1.")
+    model.action_head.ttt_fixed_observation_position = fixed_position == "1"
+    slow_only = os.environ.get("TTT_INFERENCE_SLOW_ONLY", "0")
+    if slow_only not in {"0", "1"}:
+        raise ValueError("TTT_INFERENCE_SLOW_ONLY must be 0 or 1.")
+    model.action_head.ttt_inference_slow_only = slow_only == "1"
     return model.eval().to(DEVICE)
 
 

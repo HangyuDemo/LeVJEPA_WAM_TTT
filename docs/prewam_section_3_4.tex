@@ -1,0 +1,30 @@
+\subsection{Training Objective and Optimization}
+\label{sec:prewam_training}
+
+We train on ordered windows of $T=16$ observations from a single episode, sampled eight environment frames apart. Each observation $i$ is paired with a ground-truth action chunk $\mathbf{a}_i\in\mathbb{R}^{H\times d_a}$. We sample $\boldsymbol{\epsilon}_i\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ and $u_i\sim\operatorname{Beta}(1.5,1)$, set $t_i=(0.999-u_i)/0.999$, and construct $\mathbf{x}_i^{t_i}=(1-t_i)\boldsymbol{\epsilon}_i+t_i\mathbf{a}_i$. The target flow velocity is $\mathbf{v}_i^\star=\mathbf{a}_i-\boldsymbol{\epsilon}_i$. Given current-observation conditioning $\mathbf{c}_i$ and the fast-weight state after the current memory write, the action expert predicts $\hat{\mathbf{v}}_i$. With $m_{ih}\in\{0,1\}$ denoting the validity of action step $h$, the outer objective is the masked flow-matching loss
+\begin{equation}
+\mathcal{L}_{\mathrm{FM}}=
+\frac{\sum_{i=1}^{T}\sum_{h=1}^{H}\sum_{d=1}^{d_a}
+    m_{ih}\bigl(\hat v_{ihd}-v^\star_{ihd}\bigr)^2}
+     {d_a\sum_{i=1}^{T}\sum_{h=1}^{H}m_{ih}}.
+\label{eq:prewam_flow_loss}
+\end{equation}
+
+At each selected DiT block $\ell$, the current JEPA representation supplies memory keys $K_i^{(\ell)}$ and values $V_i^{(\ell)}$. Writing the fast weights as an offset $\Delta_i^{(\ell)}$ from the learned slow initialization $W_\ell$, the inner update is
+\begin{equation}
+\begin{aligned}
+\ell_{i,\ell}^{\mathrm{TTT}}
+    &=\operatorname{MSE}\!\left(
+       f_{W_\ell+\Delta_{i-1}^{(\ell)}}(K_i^{(\ell)}),
+       V_i^{(\ell)}\right),\\
+\Delta_i^{(\ell)}
+    &=\Delta_{i-1}^{(\ell)}
+      -\operatorname{softplus}(\alpha_\ell)\,g_i^{(\ell)}
+       \nabla_{W_\ell+\Delta_{i-1}^{(\ell)}}
+       \ell_{i,\ell}^{\mathrm{TTT}},
+\end{aligned}
+\label{eq:prewam_inner_update}
+\end{equation}
+where $g_i^{(\ell)}\in[0,1]$ is the learned, observation-dependent update gate. The inner MSE drives the fast-weight write but is not added to Eq.~\eqref{eq:prewam_flow_loss}. Within each eight-observation segment, gradients of the outer loss propagate through the differentiable fast-weight updates. We carry the resulting fast-weight values into the next segment after detaching their computation graph; a new sampled window starts from $\Delta_0^{(\ell)}=0$.
+
+The pretrained visual encoder, vision--language backbone and projector, non-TTT action-expert parameters, and visual-alignment head remain frozen. AdamW updates only the TTT slow parameters (including $W_\ell$, projections, gates, and inner learning-rate parameters) and the inserted register embeddings. We use a global batch size of 64, a peak learning rate of $2\times10^{-5}$ with 3\% linear warmup and cosine decay to $10^{-6}$, weight decay $10^{-5}$, and gradient-norm clipping at 1. The future-visual alignment loss is disabled for this training recipe. Flow-matching training evaluates one sampled noise level per observation; the number of denoising steps is an inference-time choice, not a separately unrolled training objective.

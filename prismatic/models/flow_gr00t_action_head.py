@@ -8,7 +8,7 @@ from torch.distributions import Beta
 from transformers import PretrainedConfig
 
 from prismatic.models.flow_matching_head.action_encoder import ActionEncoder
-from prismatic.models.flow_matching_head.cross_attention_dit import DiT, TemporalTTTLayer
+from prismatic.models.flow_matching_head.cross_attention_dit import DiT, TemporalTTTLayer, TTTFastWeightState
 from prismatic.util.action_loss import masked_action_mse
 
 
@@ -281,6 +281,36 @@ class FlowMatchingActionHead(nn.Module):
         return proprio
 
     @staticmethod
+    def _read_memory_at_observation_position(
+        committed_states, observation_states, batch_size: int, device: torch.device
+    ):
+        """Read committed fast weights using the position from this observation's first denoise.
+
+        This is a temporary view only: callers must keep ``committed_states``
+        (including its incremented steps) for the next physical observation.
+        DiT uses one state slot per selected wrapper or inline block.
+        """
+        if observation_states is not None and len(observation_states) != len(committed_states):
+            raise ValueError("TTT state-slot count changed during action generation.")
+        query_states = []
+        for index, committed in enumerate(committed_states):
+            if committed is None:
+                query_states.append(None)
+                continue
+            if not isinstance(committed, TTTFastWeightState):
+                raise TypeError(f"Unexpected TTT state in slot {index}: {type(committed).__name__}.")
+            initial = None if observation_states is None else observation_states[index]
+            if initial is not None and not isinstance(initial, TTTFastWeightState):
+                raise TypeError(f"Unexpected initial TTT state in slot {index}: {type(initial).__name__}.")
+            step = (
+                torch.zeros(batch_size, dtype=torch.long, device=device)
+                if initial is None
+                else initial.step
+            )
+            query_states.append(TTTFastWeightState(committed.fast_weights, step))
+        return tuple(query_states)
+
+    @staticmethod
     def _flatten_time(tensor: torch.Tensor, batch: int, time_steps: int, name: str) -> torch.Tensor:
         if tensor.shape[:2] != (batch, time_steps):
             raise ValueError(
@@ -485,27 +515,54 @@ class FlowMatchingActionHead(nn.Module):
         num_steps = self.num_inference_timesteps
         if num_steps < 1:
             raise ValueError("num_inference_timesteps must be positive.")
+        ttt_inference_updates = getattr(self, "ttt_inference_updates", 1)
+        if self.ttt_enabled and not 1 <= ttt_inference_updates <= num_steps:
+            raise ValueError(
+                "ttt_inference_updates must be between 1 and the number of Flow Matching inference steps "
+                f"({num_steps}), got {ttt_inference_updates}."
+            )
         dt = 1.0 / num_steps
 
-        next_fast_weights = prev_fast_weights
+        # Slow-only ablation retains the trained TTT modules but always reads
+        # their base MLP parameters; neither current nor past fast deltas enter.
+        slow_only = self.ttt_enabled and getattr(self, "ttt_inference_slow_only", False)
+        next_fast_weights = None if slow_only else prev_fast_weights
+        fixed_observation_position = (
+            self.ttt_enabled
+            and not slow_only
+            and getattr(self, "ttt_fixed_observation_position", False)
+            and ttt_inference_updates == 1
+            and num_steps > 1
+        )
         for t in range(num_steps):
             t_cont = t / float(num_steps)
             t_discretized = int(t_cont * self.num_timestep_buckets)
             timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device, dtype=torch.long)
             if self.ttt_enabled:
-                # A physical observation is one TTT event. The first Euler
-                # evaluation writes it; later denoising evaluations read the
-                # updated memory without writing the same observation again.
-                pred_velocity, next_fast_weights = self._predict_velocity(
+                # The training-matched default writes memory on the first Euler
+                # evaluation only. Evaluation may opt into writing on more of
+                # the four denoising evaluations for an explicit ablation.
+                query_fast_weights = None if slow_only else next_fast_weights
+                if fixed_observation_position and t > 0:
+                    query_fast_weights = self._read_memory_at_observation_position(
+                        next_fast_weights, prev_fast_weights, batch_size, device
+                    )
+                pred_velocity, returned_fast_weights = self._predict_velocity(
                     vl_embs,
                     actions,
                     timesteps_tensor,
                     state,
                     memory_tokens=memory_tokens,
-                    prev_fast_weights=next_fast_weights,
+                    prev_fast_weights=query_fast_weights,
                     return_fast_weights=True,
-                    update_fast_weights=(t == 0),
+                    update_fast_weights=(not slow_only and t < ttt_inference_updates),
                 )
+                # Read-only calls return a temporary state with the old query
+                # position. Never commit that position for the next observation.
+                if slow_only:
+                    next_fast_weights = None
+                elif not fixed_observation_position or t == 0:
+                    next_fast_weights = returned_fast_weights
             else:
                 pred_velocity = self._predict_velocity(vl_embs, actions, timesteps_tensor, state)
             actions = actions + dt * pred_velocity

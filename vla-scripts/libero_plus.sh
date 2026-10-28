@@ -41,7 +41,15 @@ fi
 MAX_TASKS="${MAX_TASKS:-0}"
 MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-0}"
 NUM_OPEN_LOOP_STEPS="${NUM_OPEN_LOOP_STEPS:-0}"
+TTT_INFERENCE_UPDATES="${TTT_INFERENCE_UPDATES:-1}"
+case "${TTT_INFERENCE_MEMORY_UPDATE:-}" in
+    "") ;;
+    first_denoise) TTT_INFERENCE_UPDATES=1 ;;
+    all_denoise) TTT_INFERENCE_UPDATES="${FM_NUM_INFERENCE_TIMESTEPS:-4}" ;;
+    *) echo "TTT_INFERENCE_MEMORY_UPDATE must be first_denoise or all_denoise." >&2; exit 2 ;;
+esac
 SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-True}"
+EVAL_SEED="${EVAL_SEED:-7}"
 RESULT_ROOT="${RESULT_ROOT:-}"
 RESUME="${RESUME:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -123,10 +131,14 @@ for suite in "${SUITES[@]}"; do
         --libero_plus_categories "${CATEGORIES}"
         --num_trials_per_task "${TRIALS}"
         --save_rollouts "${SAVE_ROLLOUTS}"
+        --seed "${EVAL_SEED}"
     )
 
     if [[ -n "${RESULT_ROOT}" ]]; then
         CMD+=(--result_root "${RESULT_ROOT}")
+    fi
+    if [[ -n "${LOCAL_LOG_DIR:-}" ]]; then
+        CMD+=(--local_log_dir "${LOCAL_LOG_DIR}")
     fi
 
     if [[ -n "${VJEPA_CKPT}" ]]; then
@@ -145,6 +157,7 @@ for suite in "${SUITES[@]}"; do
     if [[ "${NUM_OPEN_LOOP_STEPS}" -gt 0 ]]; then
         CMD+=(--num_open_loop_steps "${NUM_OPEN_LOOP_STEPS}")
     fi
+    CMD+=(--ttt_inference_updates "${TTT_INFERENCE_UPDATES}")
     if [[ "${RESUME}" == "1" ]]; then
         RESUME_PATH=""
         RESUME_SEARCH_ROOT="${RESULT_ROOT:-${REPO_ROOT}/rollout/${suite}}"

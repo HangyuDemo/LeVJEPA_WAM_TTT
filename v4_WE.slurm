@@ -6,7 +6,7 @@
 #   per-device batch = 4
 #   gradient accumulation = 4
 #   global batch = 4 GPUs * 4 samples * 4 accumulation = 64
-#   physical context = 128 frames, stride = 8 => 16 TTT context updates
+#   default physical context = 128 frames, stride = 8 => 16 TTT context updates
 #   optimization = TTT layers/registers only; pretrained action head frozen
 #   default route = wrapper-explicit (overridable by R4_ARCH/R4_MEMORY_SOURCE)
 #
@@ -35,6 +35,25 @@ case "${ARCH}" in
     wrapper|inline) ;;
     *) echo "R4_ARCH must be wrapper or inline" >&2; exit 2 ;;
 esac
+
+OBSERVATION_STRIDE=8
+CONTEXT_FRAMES="${R4_CONTEXT_FRAMES:-128}"
+if [[ ! "${CONTEXT_FRAMES}" =~ ^[0-9]+$ ]] || (( CONTEXT_FRAMES < 16 || CONTEXT_FRAMES % OBSERVATION_STRIDE != 0 )); then
+    echo "R4_CONTEXT_FRAMES must be a multiple of 8 and at least 16." >&2
+    exit 2
+fi
+TTT_CONTEXT_LENGTH=$((CONTEXT_FRAMES / OBSERVATION_STRIDE))
+# The configured TBPTT segment must divide the number of observations.
+TTT_SEGMENT_SIZE=$((TTT_CONTEXT_LENGTH < 8 ? TTT_CONTEXT_LENGTH : 8))
+if (( TTT_CONTEXT_LENGTH % TTT_SEGMENT_SIZE != 0 )); then
+    echo "TTT context length must be divisible by the TBPTT segment size." >&2
+    exit 2
+fi
+ABLATION_TAG="${R4_ABLATION_TAG:-}"
+if [[ -n "${ABLATION_TAG}" && ! "${ABLATION_TAG}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+    echo "R4_ABLATION_TAG may contain only letters, digits, and hyphens." >&2
+    exit 2
+fi
 case "${MEMORY_SOURCE}" in
     jepa_current) MEMORY_TAG=explicit-current-vjepa-kv ;;
     action_tokens) MEMORY_TAG=implicit-full-dit-kv ;;
@@ -91,7 +110,10 @@ cd "${PROJECT_ROOT}"
 mkdir -p "${RUN_ROOT}" "${LOG_ROOT}"
 
 # Keep every route separate and never resume an earlier action-head-training run.
-RUN_ID="jepa-wam-ttt-r4-${ARCH}-sra16-fullkv-v5-${MEMORY_TAG}-ttt-only-vjepa21-frames128-stride8-updates16-seg8-gb64-pb4-steps30000-tacc-4gpu"
+RUN_ID="jepa-wam-ttt-r4-${ARCH}-sra16-fullkv-v5-${MEMORY_TAG}-ttt-only-vjepa21-frames${CONTEXT_FRAMES}-stride${OBSERVATION_STRIDE}-updates${TTT_CONTEXT_LENGTH}-seg${TTT_SEGMENT_SIZE}-gb64-pb4-steps30000-tacc-4gpu"
+if [[ -n "${ABLATION_TAG}" ]]; then
+    RUN_ID+="-${ABLATION_TAG}"
+fi
 RUN_DIR="${RUN_ROOT}/${RUN_ID}"
 CHECKPOINT="${RUN_DIR}/checkpoints/latest-checkpoint.pt"
 if [[ -f "${CHECKPOINT}" ]]; then
@@ -104,7 +126,7 @@ fi
 
 echo "job=${SLURM_JOB_ID} host=$(hostname) started=$(date)"
 echo "python=${JEPA_PYTHON} data=${DATA_ROOT} run_root=${RUN_ROOT}"
-echo "arch=${ARCH} memory_source=${MEMORY_SOURCE} train=ttt-only world_size=4 global_batch=64 per_device_batch=4 gradient_accumulation=4 context_frames=128 stride=8"
+echo "arch=${ARCH} memory_source=${MEMORY_SOURCE} train=ttt-only world_size=4 global_batch=64 per_device_batch=4 gradient_accumulation=4 context_frames=${CONTEXT_FRAMES} stride=${OBSERVATION_STRIDE} context_updates=${TTT_CONTEXT_LENGTH} tbptt_segment=${TTT_SEGMENT_SIZE}"
 
 # Verify all four GPUs before starting the distributed job.
 srun --nodes=1 --ntasks=1 \
@@ -117,7 +139,7 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --vla.vjepa_checkpoint_path "${VJEPA_CHECKPOINT}" \
     --data_root_dir "${DATA_ROOT}" \
     --run_root_dir "${RUN_ROOT}" \
-    --run_id_note "r4-${ARCH}-${MEMORY_TAG}-ttt-only-tacc-4gpu-gb64-frames128-stride8" \
+    --run_id_note "r4-${ARCH}-${MEMORY_TAG}-ttt-only-tacc-4gpu-gb64-frames${CONTEXT_FRAMES}-stride${OBSERVATION_STRIDE}" \
     --vla.expected_world_size 4 \
     --vla.global_batch_size 64 \
     --vla.per_device_batch_size 4 \
@@ -138,12 +160,12 @@ TRAIN_ARGS=(--module prismatic.training.train \
     --vla.ttt_token_scope state_register_action \
     --vla.ttt_action_kv_scope full_dit_tokens \
     --vla.ttt_wrapper_register_tokens True \
-    --vla.ttt_context_length 16 \
-    --vla.ttt_observation_stride 8 \
+    --vla.ttt_context_length "${TTT_CONTEXT_LENGTH}" \
+    --vla.ttt_observation_stride "${OBSERVATION_STRIDE}" \
     --vla.ttt_carry_between_segments True \
     --vla.ttt_require_full_context True \
     --vla.ttt_num_register_tokens 16 \
-    --vla.ttt_tbptt_step_size 8 \
+    --vla.ttt_tbptt_step_size "${TTT_SEGMENT_SIZE}" \
     --vla.visual_token_pair_offset 0 \
     --vla.enable_gradient_checkpointing True \
     --save_interval 500 \

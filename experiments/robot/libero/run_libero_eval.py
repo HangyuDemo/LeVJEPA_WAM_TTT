@@ -97,6 +97,7 @@ class GenerateConfig:
     max_episode_steps: Optional[int] = None
     num_steps_wait: int = 10
     num_open_loop_steps: int = NUM_ACTIONS_CHUNK
+    ttt_inference_updates: int = 1
     env_img_res: int = 384
     unnorm_key: Optional[str] = None
     local_log_dir: str = "./experiments/logs"
@@ -174,6 +175,8 @@ def _validate_config(cfg: GenerateConfig) -> None:
         raise ValueError("max_episode_steps must be positive when provided.")
     if cfg.num_open_loop_steps <= 0:
         raise ValueError("num_open_loop_steps must be positive.")
+    if cfg.ttt_inference_updates <= 0:
+        raise ValueError("ttt_inference_updates must be positive.")
     if cfg.resume_from is not None and not Path(os.path.expanduser(str(cfg.resume_from))).is_file():
         raise ValueError(f"resume_from does not exist: {cfg.resume_from}")
 
@@ -300,6 +303,7 @@ def _build_summary(
         "categories": cfg.libero_plus_categories,
         "evaluated_tasks": evaluated_tasks,
         "trials_per_task": cfg.num_trials_per_task,
+        "ttt_inference_updates": cfg.ttt_inference_updates,
         "total_episodes": stats.total_episodes,
         "successes": stats.total_successes,
         "success_rate": success_rate,
@@ -366,6 +370,11 @@ def _restore_progress(
         raise ValueError(
             f"Resume summary uses {summary.get('trials_per_task')} trials per task, "
             f"but {cfg.num_trials_per_task} was requested: {json_path}"
+        )
+    if int(summary.get("ttt_inference_updates", 1)) != cfg.ttt_inference_updates:
+        raise ValueError(
+            "Resume summary uses a different number of TTT memory updates per observation: "
+            f"{json_path}"
         )
 
     episode_results = summary.get("episode_results")
@@ -456,6 +465,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
     with open(log_path, "w", encoding="utf-8") as log_file:
         _log(f"Suite: {cfg.task_suite_name}", log_file)
         _log(f"Categories: {cfg.libero_plus_categories}", log_file)
+        _log(f"TTT memory updates per observation: {cfg.ttt_inference_updates}", log_file)
         for task_id in tqdm.tqdm(range(task_suite.n_tasks), desc=cfg.task_suite_name):
             task = task_suite.get_task(task_id)
             metadata = task_metadata.get(task.name, {})

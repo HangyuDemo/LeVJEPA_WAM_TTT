@@ -139,7 +139,11 @@ def test_temporal_ttt_can_read_a_rollout_state_without_writing_it_again() -> Non
     torch.testing.assert_close(read_state.step, torch.ones(2, dtype=torch.long))
 
 
-def test_inference_updates_ttt_once_per_observation() -> None:
+@pytest.mark.parametrize("updates,expected_flags", [
+    (1, [True, False, False, False]),
+    (4, [True, True, True, True]),
+])
+def test_inference_updates_ttt_during_selected_denoising_steps(updates, expected_flags) -> None:
     head = FlowMatchingActionHead.__new__(FlowMatchingActionHead)
     torch.nn.Module.__init__(head)
     # predict_action uses the encoder's dtype, even with a mocked predictor.
@@ -150,6 +154,7 @@ def test_inference_updates_ttt_once_per_observation() -> None:
     head.num_inference_timesteps = 4
     head.num_timestep_buckets = 1_000
     head.ttt_enabled = True
+    head.ttt_inference_updates = updates
     update_flags = []
 
     def fake_predict_velocity(
@@ -177,7 +182,7 @@ def test_inference_updates_ttt_once_per_observation() -> None:
     )
 
     assert actions.shape == (1, 2, 1)
-    assert update_flags == [True, False, False, False]
+    assert update_flags == expected_flags
 
 
 def test_ttt_checkpoint_rejects_a_different_rollout_stride() -> None:
