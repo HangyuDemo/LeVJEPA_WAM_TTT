@@ -1,74 +1,77 @@
 <div align="center">
-  <img src="docs/assets/logo-ai.webp" alt="JEPA-WAM logo" width="140" />
-  <h1>JEPA-WAM</h1>
-  <h3>Learning Vision-Language-Action Policies with Joint-Embedding World Modeling</h3>
+  <img src="docs/assets/logo-ai.webp" alt="World-action model logo" width="140" />
+  <h1>SReWAM</h1>
+  <h3>Sparse Representation-Driven Memory for One-Step World-Action Models</h3>
 
   <p>
     <a href="https://spritewithoutice.github.io/JEPA_WAM/">
-      <img src="https://img.shields.io/badge/Project-Page-2563eb?style=for-the-badge" alt="Project page" />
+      <img src="https://img.shields.io/badge/Upstream-JEPA--WAM-2563eb?style=for-the-badge" alt="Upstream JEPA-WAM project page" />
     </a>
     <a href="https://github.com/SpriteWithoutIce/openpi_jepawam/tree/main">
       <img src="https://img.shields.io/badge/%CF%800.5-OpenPI_Implementation-7c3aed?style=for-the-badge" alt="JEPA-WAM for OpenPI" />
     </a>
     <a href="https://huggingface.co/CokeAnd1ce/JEPA_WAM">
-      <img src="https://img.shields.io/badge/Models-Hugging_Face-ffd21e?style=for-the-badge" alt="Hugging Face models" />
+      <img src="https://img.shields.io/badge/Base_Models-Hugging_Face-ffd21e?style=for-the-badge" alt="JEPA-WAM base models" />
     </a>
     <a href="docs/assets/demo.mp4">
       <img src="https://img.shields.io/badge/Demo-Video-16a34a?style=for-the-badge" alt="Demo video" />
     </a>
     <a href="https://arxiv.org/abs/2608.09381">
-      <img src="https://img.shields.io/badge/arXiv-2608.09381-b31b1b?style=for-the-badge" alt="arXiv 2608.09381" />
+      <img src="https://img.shields.io/badge/Upstream_Paper-arXiv_2608.09381-b31b1b?style=for-the-badge" alt="Upstream JEPA-WAM paper" />
     </a>
   </p>
 </div>
 
 > [!IMPORTANT]
-> **π0.5 / OpenPI implementation:** JEPA-WAM's transition supervision can also be applied to a pretrained VLA while
-> preserving its original perception and action pathways. The complete π0.5 integration—including V-JEPA target
-> precomputation, training, checkpoint resume, and LIBERO/LIBERO-Plus rollout evaluation—is available in
-> **[SpriteWithoutIce/openpi_jepawam](https://github.com/SpriteWithoutIce/openpi_jepawam/tree/main)**.
+> **Scope:** This repository is the Prismatic/JEPA-WAM implementation of SReWAM. The separate
+> [OpenPI integration](https://github.com/SpriteWithoutIce/openpi_jepawam/tree/main) is a different codebase;
+> its checkpoints and inference toggles are not interchangeable with this one.
 
 <p align="center">
   <img src="docs/assets/teaser.webp" alt="JEPA-WAM overview" width="760" />
 </p>
 
-JEPA-WAM is a vision-language-action policy that adds joint-embedding world-model supervision to robot policy
-learning. Instead of reconstructing future RGB observations, it aligns policy visual states with future features from a
-frozen V-JEPA 2.1 encoder. This provides transition-aware supervision during training without adding an image decoder
-or extra perception pass at deployment time.
+SReWAM extends a pretrained JEPA-based world-action model with sparse test-time-training (TTT) memory in its
+flow-matching action expert. In the explicit route, **current** frozen V-JEPA representations provide memory-writing
+signals; post-attention policy tokens retrieve from the updated fast weights. The fast weights, not the JEPA
+representations, persist across consecutive observations and reset at an episode boundary. The original JEPA-WAM
+training and evaluation recipe remains in this repository as the starting checkpoint and baseline.
 
-This repository releases the fixed JEPA-WAM recipe used for LIBERO training and LIBERO-Plus evaluation. It contains
-one training launcher, one evaluation launcher, the model implementation, and focused regression tests.
+Code is provided for the wrapper (WE/WI) and inline (IE/II) routes, temporal training, checkpoint resume,
+LIBERO-Plus evaluation, and one- versus four-step inference. Model weights and datasets are **not** in Git. The
+upstream project page, paper, and model links above describe JEPA-WAM, not SReWAM results.
 
 ## Release Status
 
-- [x] Training and LIBERO-Plus evaluation code
-- [x] Pretrained base VLM and LIBERO policy checkpoint
-- [x] Project page and demo
-- [x] arXiv paper
-- [ ] BibTeX citation entry
+- [x] SReWAM model, training, evaluation, and regression-test source
+- [x] Scripts for the released JEPA-WAM base checkpoint
+- [ ] Public SReWAM checkpoint download link (supply weights separately until published)
+- [ ] SReWAM paper citation (add when available)
 
 ## Highlights
 
-- Frozen V-JEPA 2.1 ViT-L encoder for primary and wrist observations.
-- Qvv2.5-0.5B policy backbone adapted with LoRA.
-- GR00T-style flow-matching head for continuous action chunks.
-- Dense cosine alignment between policy visual tokens and paired future V-JEPA targets.
-- Reproducible launchers with full and end-to-end smoke-test modes.
+- Current V-JEPA 2.1 visual features write the explicit TTT fast-weight memory.
+- Sparse wrapper route at DiT blocks `(3, 7, 11, 15)`; inline and implicit ablations remain available.
+- Frozen pretrained JEPA-WAM backbone during the Round-4 TTT-only recipe.
+- One-step or four-step Euler action generation; `first_denoise` writes memory once per observation.
+- Episode-persistent fast weights and a fixed-observation-position option for multi-step inference.
 
 ## Contents
 
 - [Method](#method)
+- [Round-4 SReWAM Configuration](#round-4-srewam-configuration)
 - [Installation](#installation)
 - [Data Preparation](#data-preparation)
 - [Pretrained Models](#pretrained-models)
 - [Path Configuration](#path-configuration)
 - [Training](#training)
 - [LIBERO-Plus Evaluation](#libero-plus-evaluation)
+- [Latency Benchmark](#latency-benchmark)
 - [Results](#results)
 - [Verification](#verification)
 - [Repository Structure](#repository-structure)
 - [Citation](#citation)
+- [Public Release Checklist](RELEASING.md)
 
 ## Method
 
@@ -76,30 +79,44 @@ one training launcher, one evaluation launcher, the model implementation, and fo
   <img src="docs/assets/method-balanced.webp" alt="JEPA-WAM method" width="900" />
 </p>
 
-For each training sample, the current primary and wrist observations are encoded by a frozen V-JEPA 2.1 encoder. The
-resulting visual tokens are projected into Qvv2.5 and concatenated with the language instruction and learned action
-placeholder tokens. Qvv keeps its native causal attention mask.
+The pretrained JEPA-WAM policy supplies vision/language conditioning and a flow-matching DiT action expert. SReWAM
+adds TTT fast weights to selected DiT blocks. For the explicit WE and IE routes, memory keys/values come from the
+**current** observation's frozen V-JEPA tokens, while post-attention action tokens query the resulting memory. The
+memory update happens inside the action expert, before retrieval. A distinct slow parameter set is learned by the
+outer action-flow-matching objective; fast weights are updated online and carried between observations.
 
-The final action-placeholder states condition a flow-matching action head. In parallel, a two-layer MLP projects the
-final Qvv visual states back to the V-JEPA embedding dimension and aligns them with detached paired-frame targets:
+See [RoboTTT integration](docs/robo_ttt_integration.md) for state layouts and
+[architecture_spec.md](architecture_spec.md) for the pretrained JEPA-WAM tensor contract. The `jepa` memory source
+is a legacy predicted-future route and should not be confused with the Round-4 `jepa_current` route.
 
-```text
-loss = action_flow_matching_loss + 0.5 * visual_token_cosine_loss
-```
+## Round-4 SReWAM Configuration
 
-The auxiliary predictor is used only for training. See [architecture_spec.md](architecture_spec.md) for the tensor
-shapes and complete model contract.
+The reference WE/IE configuration in [`train_srewam_round4.sh`](vla-scripts/train_srewam_round4.sh) uses 128 physical frames sampled every 8 frames:
+`ttt_context_length=16` observation updates, with 8-update TBPTT segments. It trains TTT modules and enabled
+register tokens only; V-JEPA, Qvv/LoRA, the visual projector, the pretrained action expert, and the visual cosine
+head are frozen. It uses four GPUs, global batch 64, per-device batch 4, up to 30,000 steps, and saves every 500
+steps. The launcher runs on one node with four visible GPUs; allocate those resources using your own scheduler.
+
+| Route | DiT insertion | Memory-writing source |
+|---|---|---|
+| WE | Sparse wrapper | Current V-JEPA features (`jepa_current`) |
+| IE | Inline | Current V-JEPA features (`jepa_current`) |
+| WI | Sparse wrapper | DiT action tokens (`action_tokens`) |
+| II | Inline | DiT action tokens (`action_tokens`) |
+
+The wrapper default inserts four TTT layers; the inline default inserts one per DiT block unless explicit indices
+are configured. Route names and checkpoint paths are retained for checkpoint compatibility.
 
 ## Installation
 
-The released environment was tested with Python 3.10.16, PyTorch 2.2.0, and CUDA 12.1. The full training recipe uses
-eight GPUs; the smoke-test mode runs the same model and data path on one GPU for one optimizer step.
+The upstream JEPA-WAM environment was tested with Python 3.10.16, PyTorch 2.2.0, and CUDA 12.1. SReWAM uses the
+same dependency stack. The original base-policy recipe uses eight GPUs; the Round-4 TTT-only launcher uses four.
 
 ### 1. Create the environment
 
 ```bash
-git clone https://github.com/SpriteWithoutIce/JEPA_WAM.git
-cd JEPA_WAM
+git clone https://github.com/HangyuDemo/LeVJEPA_WAM_TTT.git
+cd LeVJEPA_WAM_TTT
 
 conda create -n jepa-wam python=3.10.16 -y
 conda activate jepa-wam
@@ -136,7 +153,8 @@ OpenVLA `dlimp` fork to the exact commit used during validation.
 
 </details>
 
-Model weights, datasets, and simulator assets are not stored in this Git repository.
+Model weights, datasets, and simulator assets are not stored in this Git repository. `pip install -e .` installs the
+`prismatic` package; run the launchers from the repository checkout.
 
 ## Data Preparation
 
@@ -206,7 +224,8 @@ mkdir -p "${ASSET_ROOT}"
 
 ### Qvv2.5-0.5B
 
-Use the local, renamed model directory. `Qvv` is a project alias, not a Hub repository:
+Provide a compatible Qvv2.5-0.5B model **and tokenizer** in this local directory. `Qvv` is a project alias, not a
+Hub repository name; this README does not claim an unverified public download URL:
 
 ```bash
 export QVV_PATH="${ASSET_ROOT}/Qvv2.5-0.5B"
@@ -273,11 +292,22 @@ export CHECKPOINT="${ASSET_ROOT}/JEPA_WAM/checkpoints/libero/jepavla-qvv25-vjepa
 | `LIBERO_PATH` | Evaluation | LIBERO-Plus repository checkout |
 | `CHECKPOINT` | Evaluation | Trained or released JEPA-WAM policy checkpoint |
 
+Round-4 TTT checkpoints are architecture-specific and must include their `config.json` and
+`dataset_statistics.json` alongside the checkpoint. Do not load a WE checkpoint as IE or use another route's
+configuration. The SReWAM checkpoint download location must be supplied by the model publisher; it is not the
+upstream JEPA-WAM Hugging Face repository.
+
+For W&B online training, export `WANDB_API_KEY` before launch or place it in an ignored local file named
+`.wandb_api_key` at the repository root (or point `WANDB_API_KEY_FILE` to another file). Restrict the file to your
+user, e.g. `chmod 600 .wandb_api_key`. Never put API keys in source files or commit them. Set `WANDB_MODE=offline`
+to record runs without online authentication.
+
 ## Training
 
-### Full training recipe
+### Upstream JEPA-WAM base-policy recipe
 
-The public launcher implements the fixed eight-GPU configuration used by this release:
+This launcher reproduces the original eight-GPU JEPA-WAM base-policy configuration, not the SReWAM TTT-only
+fine-tuning stage:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
@@ -299,7 +329,28 @@ bash vla-scripts/run_visual_cosine_primary.sh
 Checkpoints and run metadata are written to `RUNS_DIR` (default: `./runs`). Console logs are written to `LOG_DIR`
 (default: `./logs`). Both locations can be overridden with environment variables.
 
-### One-step training smoke test
+### SReWAM Round-4 TTT-only training
+
+Provision the upstream policy checkpoint, four RLDS datasets, and the visual/Qvv assets above. After obtaining
+four GPUs on one node, launch WE with the portable script:
+
+```bash
+export LIBERO_DATA=/path/to/modified_libero_rlds
+export ASSET_ROOT=/path/to/jepa_wam_assets
+export R4_INITIAL_CHECKPOINT="${CHECKPOINT}"
+export WANDB_API_KEY_FILE=/path/to/private/wandb-key
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash vla-scripts/train_srewam_round4.sh
+```
+
+`R4_ARCH=inline` selects IE; setting `R4_MEMORY_SOURCE=action_tokens` selects the corresponding implicit WI/II
+route. Change only those route variables to compare architectures while holding the other settings fixed.
+`DRY_RUN=1` prints the command without loading data or starting training. Set `R4_RUN_ID` explicitly when
+resuming a named run; the launcher refuses an existing run directory without a usable latest checkpoint.
+Checkpoint directories include route and context metadata;
+do not rename or mix them after training. For detailed temporal-state behavior see
+[RoboTTT integration](docs/robo_ttt_integration.md).
+
+### One-optimizer-step training smoke test
 
 Use smoke mode to validate model loading, all four datasets, forward/backward, the optimizer step, and checkpoint
 writing on one GPU:
@@ -346,24 +397,35 @@ The positional arguments are:
 bash vla-scripts/libero_plus.sh CHECKPOINT TASK_SUITE CATEGORIES TRIALS
 ```
 
-For checkpoints trained by the four JEPA-WAM + TTT Slurm routes, use the
-project-local convenience launcher below. It supplies the local asset paths,
-uses LIBERO-Plus, disables rollout-video saving by default, and creates a
-unique result directory for each checkpoint and invocation:
+For a SReWAM checkpoint, use the TTT launcher with the **matching run directory's** checkpoint file. It uses
+the environment variables from [Path Configuration](#path-configuration), disables videos by default, and gives
+each invocation its own result directory:
 
 ```bash
+export SREWAM_WE_CKPT=/path/to/WE-run/checkpoints/best-validation-checkpoint.pt
+export TTT_INFERENCE_MEMORY_UPDATE=first_denoise
+export TTT_INFERENCE_FIXED_OBSERVATION_POSITION=1
+export FM_NUM_INFERENCE_TIMESTEPS=4
+export NUM_OPEN_LOOP_STEPS=8
 bash vla-scripts/libero_plus_ttt.sh \
-  /home/ha865618/project/LeVJEPA_WAM_TTT/checkpoints/<run-id>/checkpoints/latest-checkpoint.pt \
-  libero_spatial all 1
+  "${SREWAM_WE_CKPT}" libero_spatial all 1
 ```
 
-The four `<run-id>` values are:
+For a one-denoise comparison using the **same** checkpoint, change only `FM_NUM_INFERENCE_TIMESTEPS=1`. Leave
+`TTT_INFERENCE_MEMORY_UPDATE=first_denoise`: the memory is written once per observation in either case.
+For four-step inference, the fixed-position option makes all four denoise queries use the same observation-start
+temporal position while only the first writes fast weights; the next observation starts at the incremented
+position. The setting has no additional query-position effect when there is only one denoise step. Memory resets
+at each episode boundary. `all_denoise` is a separate ablation that writes on every Euler step; it is **not**
+the training-matched `first_denoise` setting.
+
+The Round-4 route naming convention is:
 
 ```text
-jepa-wam-ttt-wrapper-jepa-memory-vjepa21-context8-gb1-pb1
-jepa-wam-ttt-wrapper-action-kv-vjepa21-context8-gb1-pb1
-jepa-wam-ttt-inline-jepa-memory-vjepa21-context8-gb1-pb1
-jepa-wam-ttt-inline-action-kv-vjepa21-context8-gb1-pb1
+WE = wrapper + explicit current V-JEPA K/V
+IE = inline  + explicit current V-JEPA K/V
+WI = wrapper + implicit DiT-token K/V
+II = inline  + implicit DiT-token K/V
 ```
 
 Set `SAVE_ROLLOUTS=True` only when rollout videos are needed. Results from
@@ -376,7 +438,7 @@ Use `all` to run the four LIBERO-Plus suites (`libero_spatial`, `libero_object`,
 `CATEGORIES` accepts `all` or a comma-separated list of `camera`, `robot`, `language`, `light`, `background`, `sensor`,
 and `layout`.
 
-When `CHECKPOINT` is omitted, the launcher selects the newest
+When `CHECKPOINT` is omitted, the upstream launcher selects the newest
 `RUNS_DIR/*/checkpoints/latest-checkpoint.pt`. Evaluation logs are saved under `experiments/logs`, and rollout videos
 are saved under `rollout`.
 
@@ -447,8 +509,8 @@ The paper's standard LIBERO table is separate from LIBERO-Plus. It uses the stan
 suite, and 50 episodes per task. The launcher is:
 
 ```bash
-git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /home/ha865618/project/LIBERO
-export LIBERO_PATH=/home/ha865618/project/LIBERO
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /path/to/LIBERO
+export LIBERO_PATH=/path/to/LIBERO
 
 NUM_OPEN_LOOP_STEPS=8 \
 SAVE_ROLLOUTS=False \
@@ -457,59 +519,101 @@ bash vla-scripts/libero_standard.sh "${CHECKPOINT}" all 50
 
 The `libero_10` suite corresponds to the paper's Long suite. The standard evaluator also writes summaries beside any
 rollout videos. `NUM_OPEN_LOOP_STEPS=8` controls how many predicted actions are executed before replanning; the
-released local model architecture currently predicts an action horizon of 20.
+Round-4 model predicts an action horizon of 20.
+
+## Latency Benchmark
+
+[`benchmark_predict_action_latency.py`](experiments/robot/libero/benchmark_predict_action_latency.py) measures
+`predict_action` latency **without** running full LIBERO episodes or computing success rates. It preloads 230 genuine
+LIBERO-Plus Spatial observations from 10 short simulator sequences (23 observations per episode, advanced with
+no-op actions); this is a latency sample, not a success-rate evaluation. The same sequence and seed 7 are reused
+for all groups. Each group has 30 untimed warmup calls and 200 measured calls, run sequentially on one otherwise
+idle H100. Each call returns a predicted action horizon and the first eight actions form the executed chunk.
+
+The four groups are the original JEPA-WAM 40k-step checkpoint at four and one Euler steps, then the WE
+`best-validation-checkpoint.pt` at four and one steps. The WE groups write fast weights once per observation and
+use fixed-observation-position retrieval. Expert timing encloses `action_head.predict_action`, including online
+TTT update; E2E timing encloses model `predict_action` through denormalized actions. Both synchronize CUDA at
+their boundaries. Model loading, observation capture, and environment rendering are excluded. Each group saves
+200 raw Expert/E2E milliseconds plus mean, median, p95, device name, version, and memory occupancy. The script
+refuses missing checkpoints, a non-H100 GPU, or an already-used output directory.
+
+On an otherwise idle H100, set `LIBERO_PATH`, `ASSET_ROOT`, and the WE checkpoint path, then run:
+
+```bash
+export SREWAM_WE_CKPT=/path/to/WE-run/checkpoints/best-validation-checkpoint.pt
+export OUTPUT_DIR="$PWD/latency_benchmarks/jepa_we_spatial_$(date +%Y%m%d-%H%M%S)"
+CUDA_VISIBLE_DEVICES=0 bash vla-scripts/benchmark_jepa_we_spatial_latency.sh
+```
+
+Results are written under `OUTPUT_DIR`, including `summary.json` and one JSON file per group. The
+benchmark does not contain a separate `fixed_observation_memory_position.py` adapter; it uses the repository's
+equivalent `ttt_fixed_observation_position` action-head option.
 
 ## Results
 
-JEPA-WAM reaches an average success rate of **79.2%** across the seven LIBERO-Plus distribution-shift categories.
+The following **upstream JEPA-WAM** baseline is retained for reference; it is not an SReWAM result. No SReWAM
+success-rate or latency value is claimed in this README until the corresponding public evaluation artifacts are
+available. The published upstream JEPA-WAM result reports an average success rate of **79.2%** across seven
+LIBERO-Plus distribution-shift categories.
 
 | Camera | Robot | Language | Light | Background | Noise | Layout | Average |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 79.2 | 59.2 | 68.2 | 93.3 | 94.6 | 83.6 | 76.1 | **79.2** |
 
-RoboTwin 2.0, ablation, and real-world experiment tables are available on the
-[project page](https://spritewithoutice.github.io/JEPA_WAM/).
+Upstream RoboTwin 2.0 and real-world tables are on the
+[JEPA-WAM project page](https://spritewithoutice.github.io/JEPA_WAM/); they should not be cited as SReWAM results.
 
 ## Verification
 
-The complete workflow was exercised in the reference environment on an H100 GPU:
+The upstream JEPA-WAM base-policy workflow was exercised in its reference H100 environment:
 
 - `requirements.txt` resolved successfully and `pip check` reported no dependency conflicts.
 - A one-step run loaded Qvv, V-JEPA, the base VLM, and all four LIBERO RLDS datasets.
 - Forward, backward, optimizer update, and checkpoint save completed with a smoke-test loss of `1.4728`.
 - The evaluator reconstructed a compatible checkpoint and produced an action in a LIBERO-Plus environment.
 
-Run the focused repository checks with:
+Run the SReWAM regression checks and script syntax checks with:
 
 ```bash
-python -m pytest tests/test_visual_token_cosine.py
-bash -n vla-scripts/run_visual_cosine_primary.sh
-bash -n vla-scripts/libero_plus.sh
+python -m pytest tests/test_fixed_observation_position.py \
+  tests/test_ttt_round2.py tests/test_ttt_slow_only_inference.py \
+  tests/test_validation.py
+bash -n vla-scripts/train_srewam_round4.sh vla-scripts/libero_plus_ttt.sh \
+  vla-scripts/wandb_auth.sh vla-scripts/benchmark_jepa_we_spatial_latency.sh
+python -m py_compile experiments/robot/libero/benchmark_predict_action_latency.py
 ```
+
+These checks do not replace a GPU model-load and simulator smoke test on the destination cluster. In particular,
+the public release should not claim latency numbers until the four-group benchmark has actually completed.
 
 ## Repository Structure
 
 ```text
-JEPA_WAM/
+LeVJEPA_WAM_TTT/
 ├── prismatic/                         # model, data, training, and checkpoint code
-│   └── training/train.py              # distributed JEPA-WAM training entry point
-├── experiments/robot/libero/          # LIBERO-Plus evaluator and environment helpers
+│   └── training/train.py              # distributed JEPA-WAM/SReWAM training entry point
+├── experiments/robot/libero/          # LIBERO-Plus evaluator and latency benchmark
 ├── vla-scripts/
-│   ├── run_visual_cosine_primary.sh   # fixed training launcher
-│   └── libero_plus.sh                 # LIBERO-Plus evaluation launcher
-├── tests/                              # architecture regression tests
-├── docs/                               # GitHub Pages project site
+│   ├── run_visual_cosine_primary.sh   # upstream baseline launcher
+│   ├── train_srewam_round4.sh          # portable Round-4 TTT-only launcher
+│   ├── libero_plus_ttt.sh              # SReWAM LIBERO-Plus launcher
+│   └── benchmark_jepa_we_spatial_latency.sh
+├── tests/                              # TTT/state/architecture regressions
+├── docs/                               # upstream site and SReWAM technical notes
 ├── requirements.txt                    # tested Python 3.10/CUDA 12.1 runtime lock
 └── architecture_spec.md               # released architecture specification
 ```
 
 ## Citation
 
-The paper is available on [arXiv:2608.09381](https://arxiv.org/abs/2608.09381). The BibTeX entry will be added soon.
+The SReWAM paper is titled *SReWAM: Sparse Representation-Driven Memory for One-Step World-Action Models*.
+Add its citation here after publication. The upstream JEPA-WAM paper is
+[arXiv:2608.09381](https://arxiv.org/abs/2608.09381); it is a separate work.
 
 ## Acknowledgements
 
-JEPA-WAM builds on [V-JEPA 2](https://github.com/facebookresearch/vjepa2),
+SReWAM builds on JEPA-WAM and [V-JEPA 2](https://github.com/facebookresearch/vjepa2),
 Qvv2.5 (local backbone alias),
 [Prismatic VLMs](https://github.com/TRI-ML/prismatic-vlms), [OpenVLA](https://github.com/openvla/openvla), and
 [LIBERO-Plus](https://github.com/sylvestf/LIBERO-plus). We thank the authors for releasing their code, models,

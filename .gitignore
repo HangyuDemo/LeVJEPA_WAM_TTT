@@ -7,13 +7,14 @@ __pycache__/
 *.so
 
 # Distribution / packaging
-run_ttt_action_expert_1gpu.slurm
 .Python
 build/
 develop-eggs/
 dist/
 downloads/
 rollout_ttt_eval/
+rollout_ttt/
+latency_benchmarks/
 eggs/
 .eggs/
 lib/
@@ -161,3 +162,27 @@ slurm_logs/
 checkpoints/
 jepa_wam_assets/
 .libero_plus_config/
+
+# Local archival files and cluster-specific launchers, not part of the SReWAM source release.
+/2608.09381v1.pdf
+*.slurm
+slurm-*.out
+slurm-*.err
+/train_ttt_r4_action_expert_common.sh
+/vla-scripts/newton_r4_libero_plus_task.sh
+# Upstream JEPA-WAM static site; keep technical Markdown and README-used media.
+/docs/index.html
+/docs/styles.css
+/docs/favicon.png
+/docs/assets/demo-poster.webp
+/docs/assets/real-world-results.webp
+# Historical implementation notes and paper drafts are local archives.
+/docs/training_validation.md
+/docs/ttt_token_scope_v3.md
+/docs/wrapper_register_v2.md
+/docs/ttt_memory_sources_v4.md
+/docs/prewam_section_3_4.tex
+/docs/prewam_section_3_4_zh.md
+/docs/jepa_wam_ttt_v1_vs_v2_training_framework.png
+# Historical architecture drawing describes an obsolete recipe.
+/figures/

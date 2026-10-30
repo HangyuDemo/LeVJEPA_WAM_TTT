@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jepa-wam"
-description = "jepa-wam"
+description = "SReWAM: sparse representation-driven TTT memory for JEPA world-action models"
 version = "0.0.1"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,15 +1,7 @@
-# JEPA-WAM project page
+# Technical notes
 
-This directory is a dependency-free, single-column project page for GitHub Pages.
-
-The public project links in `index.html` are:
-
-- Paper: https://arxiv.org/abs/2608.09381
-- Code: https://github.com/SpriteWithoutIce/JEPA_WAM
-
-The deployment workflow publishes this directory from the `main` branch. The site can also be
-served locally from the repository root with:
-
-```bash
-python -m http.server 8000 --directory docs
-```
+This directory contains training and implementation notes for SReWAM and its
+upstream JEPA-WAM base. The old upstream JEPA-WAM static project page is kept
+locally only; it is excluded from this source release because it does not
+describe SReWAM results. Do not configure GitHub Pages to publish `docs/`
+until a separate SReWAM project page has been reviewed.

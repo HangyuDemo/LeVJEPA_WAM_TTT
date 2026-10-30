@@ -25,11 +25,11 @@ if [[ -z "${CHECKPOINT}" ]]; then
     exit 1
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-/home/ha865618/.conda/envs/jepa_wam/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
 BASE_VLM_RUN="${BASE_VLM_RUN:-${ASSET_ROOT}/JEPA_WAM/checkpoints/pretrained_vlm/prism-qvv25-vjepa21-vitl-384px+0_5b+stage-finetune+x7}"
 QVV_PATH="${QVV_PATH:-${ASSET_ROOT}/Qvv2.5-0.5B}"
 VJEPA_CKPT="${VJEPA_CKPT:-${ASSET_ROOT}/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt}"
-LIBERO_PATH="${LIBERO_PATH:-/home/ha865618/project/LIBERO-plus}"
+: "${LIBERO_PATH:?Set LIBERO_PATH to the LIBERO-Plus checkout}"
 SAVE_ROLLOUTS="${SAVE_ROLLOUTS:-False}"
 NUM_OPEN_LOOP_STEPS="${NUM_OPEN_LOOP_STEPS:-8}"
 STAMP="${EVAL_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
