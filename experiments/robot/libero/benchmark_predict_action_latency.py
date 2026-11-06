@@ -91,7 +91,10 @@ def summarize(samples: list[float]) -> dict:
     }
 
 
-def run_group(model, records: list[Observation], *, label: str, steps: int, checkpoint: Path) -> dict:
+def run_group(
+    model, records: list[Observation], *, label: str, steps: int, checkpoint: Path,
+    peak_only_measured: bool = False,
+) -> dict:
     set_seed_everywhere(7)
     head = model.action_head
     head.num_inference_timesteps = steps
@@ -125,6 +128,9 @@ def run_group(model, records: list[Observation], *, label: str, steps: int, chec
             if record.episode != prior_episode:
                 model.reset_ttt_memory()
                 prior_episode = record.episode
+            if peak_only_measured and index == 30:
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats(0)
             torch.cuda.synchronize()
             start = time.perf_counter()
             actions = model.predict_action(

@@ -110,6 +110,7 @@ class PrismaticVLM(VLM):
             fm_max_seq_len=kwargs.get("fm_max_seq_len", 1024),
             fm_state_dropout=kwargs.get("fm_state_dropout", 0.5),
             ttt_enabled=kwargs.get("ttt_enabled", False),
+            ttt_static_adapter=kwargs.get("ttt_static_adapter", False),
             ttt_memory_source=ttt_memory_source,
             ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=kwargs.get("ttt_num_register_tokens", 16),

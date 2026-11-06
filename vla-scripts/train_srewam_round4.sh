@@ -9,6 +9,28 @@ MEMORY_SOURCE="${R4_MEMORY_SOURCE:-jepa_current}"
 CONTEXT_FRAMES="${R4_CONTEXT_FRAMES:-128}"
 OBSERVATION_STRIDE=8
 DRY_RUN="${DRY_RUN:-0}"
+STATIC_ADAPTER="${R4_STATIC_ADAPTER:-0}"
+GLOBAL_BATCH_SIZE="${R4_GLOBAL_BATCH_SIZE:-64}"
+PER_DEVICE_BATCH_SIZE="${R4_PER_DEVICE_BATCH_SIZE:-4}"
+MAX_STEPS="${R4_MAX_STEPS:-30000}"
+
+[[ "${STATIC_ADAPTER}" == 0 || "${STATIC_ADAPTER}" == 1 ]] || { echo "R4_STATIC_ADAPTER must be 0 or 1" >&2; exit 2; }
+if [[ "${STATIC_ADAPTER}" == 1 && ( "${ARCH}" != wrapper || "${MEMORY_SOURCE}" != jepa_current ) ]]; then
+    echo "Static adapter requires wrapper with jepa_current." >&2; exit 2
+fi
+for number in "${GLOBAL_BATCH_SIZE}" "${PER_DEVICE_BATCH_SIZE}" "${MAX_STEPS}"; do
+    [[ "${number}" =~ ^[1-9][0-9]*$ ]] || { echo "Batch sizes and max steps must be positive integers." >&2; exit 2; }
+done
+(( GLOBAL_BATCH_SIZE % (4 * PER_DEVICE_BATCH_SIZE) == 0 )) || {
+    echo "Global batch must be divisible by 4 GPUs times per-device batch." >&2; exit 2;
+}
+if [[ "${STATIC_ADAPTER}" == 1 ]]; then
+    STATIC_TAG="-static-visual-adapter"
+    STATIC_FLAG=True
+else
+    STATIC_TAG=""
+    STATIC_FLAG=False
+fi
 
 case "${ARCH}" in wrapper|inline) ;; *) echo "R4_ARCH must be wrapper or inline" >&2; exit 2 ;; esac
 case "${MEMORY_SOURCE}" in
@@ -34,7 +56,7 @@ fi
 
 TORCHRUN_BIN="${TORCHRUN_BIN:-$(command -v torchrun || true)}"
 RUN_ROOT="${R4_RUN_ROOT:-${PROJECT_ROOT}/checkpoints/4th_round}"
-RUN_ID="${R4_RUN_ID:-srewam-r4-${ARCH}-${MEMORY_TAG}-frames${CONTEXT_FRAMES}-stride8-updates${CONTEXT_UPDATES}-seg${SEGMENT_SIZE}-gb64-pb4}"
+RUN_ID="${R4_RUN_ID:-srewam-r4-${ARCH}-${MEMORY_TAG}${STATIC_TAG}-frames${CONTEXT_FRAMES}-stride8-updates${CONTEXT_UPDATES}-seg${SEGMENT_SIZE}-gb${GLOBAL_BATCH_SIZE}-pb${PER_DEVICE_BATCH_SIZE}}"
 if [[ ! "${RUN_ID}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
     echo "R4_RUN_ID must be a single safe directory name" >&2
     exit 2
@@ -69,9 +91,9 @@ TRAIN_ARGS=(
     --run_root_dir "${RUN_ROOT}"
     --run_id_note "r4-${ARCH}-${MEMORY_TAG}-ttt-only-frames${CONTEXT_FRAMES}-stride8"
     --vla.expected_world_size 4
-    --vla.global_batch_size 64
-    --vla.per_device_batch_size 4
-    --vla.max_steps 30000
+    --vla.global_batch_size "${GLOBAL_BATCH_SIZE}"
+    --vla.per_device_batch_size "${PER_DEVICE_BATCH_SIZE}"
+    --vla.max_steps "${MAX_STEPS}"
     --vla.learning_rate 2e-5
     --vla.min_learning_rate 1e-6
     --vla.weight_decay 1e-5
@@ -83,6 +105,7 @@ TRAIN_ARGS=(
     --vla.train_ttt_only True
     --vla.train_visual_token_cosine_head False
     --vla.ttt_enabled True
+    --vla.ttt_static_adapter "${STATIC_FLAG}"
     --vla.ttt_memory_source "${MEMORY_SOURCE}"
     --vla.ttt_architecture "${ARCH}"
     --vla.ttt_token_scope state_register_action

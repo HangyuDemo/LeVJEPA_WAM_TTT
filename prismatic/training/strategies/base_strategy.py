@@ -352,6 +352,7 @@ class TrainingStrategy(ABC):
                 autocast_context=lambda: torch.autocast(
                     "cuda", dtype=self.mixed_precision_dtype, enabled=self.enable_mixed_precision_training
                 ),
+                static_visual_adapter=getattr(self, "static_visual_adapter", False),
             )
             if overwatch.is_rank_zero():
                 with (metrics.run_dir / "validation-metrics.jsonl").open("a") as handle:
@@ -360,8 +361,8 @@ class TrainingStrategy(ABC):
             return result
 
         if validation_datasets:
-            if getattr(self, "ttt_segment_size", None) is None:
-                raise ValueError("Held-out validation requires segmented TTT action-only training.")
+            if getattr(self, "ttt_segment_size", None) is None and not getattr(self, "static_visual_adapter", False):
+                raise ValueError("Held-out validation requires segmented TTT or a static visual adapter.")
             if validation_interval < 1:
                 raise ValueError("validation_interval must be positive.")
             if overwatch.world_size() > 1:

@@ -69,6 +69,7 @@ def load_vla(
     # Optional architecture overrides used when adding TTT layers to an
     # existing non-TTT JEPA-WAM checkpoint.
     ttt_enabled: Optional[bool] = None,
+    ttt_static_adapter: Optional[bool] = None,
     ttt_memory_source: Optional[str] = None,
     ttt_architecture: Optional[str] = None,
     ttt_num_register_tokens: Optional[int] = None,
@@ -99,6 +100,7 @@ def load_vla(
     vla_cfg = dict(full_cfg["vla"])
     config_overrides = {
         "ttt_enabled": ttt_enabled,
+        "ttt_static_adapter": ttt_static_adapter,
         "ttt_memory_source": ttt_memory_source,
         "ttt_architecture": ttt_architecture,
         "ttt_num_register_tokens": ttt_num_register_tokens,
@@ -183,6 +185,7 @@ def load_vla(
         fm_max_seq_len=int(vla_cfg.get("fm_max_seq_len", 1024)),
         fm_state_dropout=float(vla_cfg.get("fm_state_dropout", 0.5)),
         ttt_enabled=bool(vla_cfg.get("ttt_enabled", False)),
+        ttt_static_adapter=bool(vla_cfg.get("ttt_static_adapter", False)),
         ttt_memory_source=vla_cfg.get("ttt_memory_source", "jepa"),
         ttt_architecture=vla_cfg.get("ttt_architecture", "wrapper"),
         ttt_num_register_tokens=int(vla_cfg.get("ttt_num_register_tokens", 16)),

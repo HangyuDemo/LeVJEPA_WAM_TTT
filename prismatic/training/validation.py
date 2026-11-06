@@ -114,6 +114,7 @@ def validation_context(model, seed):
 def evaluate_action_loss(
     model, datasets, collator, segment_size, seed=7,
     move_to_device=lambda value: value, autocast_context=nullcontext,
+    static_visual_adapter=False,
 ):
     """Token-weighted distributed loss per suite and overall.
 
@@ -140,10 +141,25 @@ def evaluate_action_loss(
                 # Stable across rank assignment and world size. Padding ranks
                 # use the replayed sample's seed, though their result is ignored.
                 _seed_validation_rng(suite_seed + sample_index)
-                result = backward_temporal_segments(
-                    model, batch, segment_size, move_to_device=move_to_device,
-                    autocast_context=autocast_context, backward=False, check_finite=True,
-                )
+                if static_visual_adapter and segment_size is None:
+                    if batch["actions"].ndim != 3:
+                        raise ValueError("Static visual adapter validation expects single observations [B,H,D].")
+                    single_batch = move_to_device(batch)
+                    with autocast_context():
+                        result = model(
+                            input_ids=single_batch["input_ids"],
+                            attention_mask=single_batch["attention_mask"],
+                            pixel_values=single_batch["pixel_values"],
+                            pair_pixel_values=single_batch.get("pair_pixel_values"),
+                            actions=single_batch["actions"],
+                            proprio=single_batch.get("proprio"),
+                            action_valid_mask=single_batch.get("action_valid_mask"),
+                        )
+                else:
+                    result = backward_temporal_segments(
+                        model, batch, segment_size, move_to_device=move_to_device,
+                        autocast_context=autocast_context, backward=False, check_finite=True,
+                    )
                 if contributes:
                     count = int(valid_action_mask(
                         batch["actions"], batch.get("action_valid_mask"), batch.get("time_valid_mask")

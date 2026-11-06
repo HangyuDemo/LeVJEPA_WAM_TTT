@@ -81,12 +81,16 @@ class TemporalTTTLayer(nn.Module):
         memory_dim: Optional[int] = None,
         require_memory_tokens: bool = False,
         learned_forget: bool = True,
+        static_adapter: bool = False,
         rope_theta: float = 10_000.0,
     ) -> None:
         super().__init__()
         self.dim = dim
         self.memory_dim = memory_dim or dim
         self.require_memory_tokens = require_memory_tokens
+        self.static_adapter = static_adapter
+        if static_adapter and not require_memory_tokens:
+            raise ValueError("The static visual adapter requires current JEPA memory tokens.")
         if self.memory_dim % 2:
             raise ValueError("TemporalTTTLayer requires an even JEPA memory dimension for RoPE.")
         self.rope_theta = rope_theta
@@ -304,6 +308,26 @@ class TemporalTTTLayer(nn.Module):
                 f"time_valid_mask must have shape {(batch, time_steps)}, got {tuple(time_valid_mask.shape)}."
             )
 
+        if self.static_adapter:
+            if flat_memory_tokens is None or flat_kv_tokens is not None:
+                raise ValueError("The static visual adapter requires explicit current JEPA tokens.")
+            if flat_memory_tokens.shape[-1] != self.memory_dim:
+                raise ValueError("Static adapter visual-token dimension does not match memory_dim.")
+            # The same slow modules/parameters as WE form a stateless visual
+            # adapter. Each flattened observation is independent: current JEPA
+            # tokens condition the post-attention policy queries directly.
+            q_hidden = self.to_qkv(hidden_states).chunk(3, dim=-1)[0]
+            queries = self.query_to_memory(q_hidden)
+            keys = self.memory_norm(flat_memory_tokens)
+            values = flat_memory_tokens
+            visual_context = F.scaled_dot_product_attention(
+                queries.unsqueeze(1), keys.unsqueeze(1), values.unsqueeze(1)
+            ).squeeze(1)
+            gate = self.to_forget_gate(hidden_states.mean(dim=1)).unsqueeze(1)
+            conditioned = queries + F.softplus(self.learnable_lr) * gate * visual_context
+            memory_out = self.memory_to_output(self.memory(conditioned))
+            return memory_out * self.memory_out_layerscale.tanh(), None
+
         chunks = hidden_states.reshape(batch, time_steps, *hidden_states.shape[1:])
         memory_chunks = (
             None
@@ -360,6 +384,7 @@ class RoboTTTStyleActionWrapper(nn.Module):
         prefix_token_count: int = 0,
         token_scope: str = "legacy",
         action_kv_scope: str = "query_tokens",
+        static_adapter: bool = False,
     ) -> None:
         super().__init__()
         if memory_source not in {"jepa", "jepa_current", "action_tokens"}:
@@ -382,6 +407,7 @@ class RoboTTTStyleActionWrapper(nn.Module):
             memory_dim=memory_dim,
             require_memory_tokens=memory_source in {"jepa", "jepa_current"},
             learned_forget=learned_forget,
+            static_adapter=static_adapter,
         )
 
     def forward(
@@ -693,6 +719,7 @@ class DiT(ModelMixin, ConfigMixin):
         ttt_memory_dim: Optional[int] = None,
         ttt_tbptt_step_size: Optional[int] = None,
         ttt_learned_forget: bool = True,
+        ttt_static_adapter: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -700,6 +727,9 @@ class DiT(ModelMixin, ConfigMixin):
         self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
         self.gradient_checkpointing = False
         self.ttt_enabled = ttt_enabled
+        if ttt_static_adapter and (not ttt_enabled or ttt_architecture != "wrapper" or ttt_memory_source != "jepa_current"):
+            raise ValueError("Static adapter requires a current-JEPA WE wrapper.")
+        self.ttt_static_adapter = ttt_static_adapter
         if ttt_token_scope not in {"legacy", "state_register_action"}:
             raise ValueError(f"Unsupported TTT token scope: {ttt_token_scope!r}.")
         if ttt_enabled and ttt_token_scope == "state_register_action" and ttt_wrapper_prefix_token_count < 2:
@@ -759,6 +789,7 @@ class DiT(ModelMixin, ConfigMixin):
                         prefix_token_count=ttt_wrapper_prefix_token_count,
                         token_scope=ttt_token_scope,
                         action_kv_scope=ttt_action_kv_scope,
+                        static_adapter=ttt_static_adapter,
                     )
                 else:
                     ttt_layer = TemporalTTTLayer(

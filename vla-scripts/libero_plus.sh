@@ -160,7 +160,11 @@ for suite in "${SUITES[@]}"; do
     CMD+=(--ttt_inference_updates "${TTT_INFERENCE_UPDATES}")
     if [[ "${RESUME}" == "1" ]]; then
         RESUME_PATH=""
-        RESUME_SEARCH_ROOT="${RESULT_ROOT:-${REPO_ROOT}/rollout/${suite}}"
+        if [[ -n "${RESULT_ROOT}" ]]; then
+            RESUME_SEARCH_ROOT="${RESULT_ROOT}/${suite}"
+        else
+            RESUME_SEARCH_ROOT="${REPO_ROOT}/rollout/${suite}"
+        fi
         if [[ -d "${RESUME_SEARCH_ROOT}" ]]; then
             RESUME_PATH="$(find "${RESUME_SEARCH_ROOT}" -type f -name 'summary-*.json' -printf '%T@ %p\n' \
                 | sort -nr \

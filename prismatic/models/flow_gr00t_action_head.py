@@ -38,6 +38,7 @@ class FlowMatchingActionHeadConfig(PretrainedConfig):
     num_inference_timesteps: int = field(default=4)
     num_target_vision_tokens: int = field(default=32)
     ttt_enabled: bool = field(default=False)
+    ttt_static_adapter: bool = field(default=False)
     ttt_memory_source: str = field(default="jepa")
     ttt_architecture: str = field(default="wrapper")
     ttt_num_register_tokens: int = field(default=16)
@@ -85,6 +86,7 @@ class FlowMatchingActionHead(nn.Module):
         fm_max_seq_len: int = 1024,
         fm_state_dropout: float = 0.5,
         ttt_enabled: bool = False,
+        ttt_static_adapter: bool = False,
         ttt_memory_source: str = "jepa",
         ttt_architecture: str = "wrapper",
         ttt_num_register_tokens: int = 16,
@@ -175,6 +177,7 @@ class FlowMatchingActionHead(nn.Module):
             # Architecture/layer indices select the insertion points;
             # memory_source selects K/V and token_scope selects input/residual.
             "ttt_enabled": ttt_enabled,
+            "ttt_static_adapter": ttt_static_adapter,
             "ttt_memory_source": ttt_memory_source,
             "ttt_architecture": ttt_architecture,
             "ttt_token_scope": ttt_token_scope,
@@ -213,6 +216,7 @@ class FlowMatchingActionHead(nn.Module):
             num_inference_timesteps=fm_num_inference_timesteps,
             num_target_vision_tokens=fm_num_target_vision_tokens,
             ttt_enabled=ttt_enabled,
+            ttt_static_adapter=ttt_static_adapter,
             ttt_memory_source=ttt_memory_source,
             ttt_architecture=ttt_architecture,
             ttt_num_register_tokens=ttt_num_register_tokens,
@@ -233,6 +237,7 @@ class FlowMatchingActionHead(nn.Module):
         self.action_horizon = config.action_horizon
         self.num_inference_timesteps = config.num_inference_timesteps
         self.ttt_enabled = ttt_enabled
+        self.ttt_static_adapter = ttt_static_adapter
         self.ttt_memory_source = ttt_memory_source
         self.ttt_architecture = ttt_architecture
         self.ttt_tbptt_step_size = ttt_tbptt_step_size
@@ -484,7 +489,7 @@ class FlowMatchingActionHead(nn.Module):
             pred_actions = self._predict_velocity(vl_embs, noisy_trajectory, t_discretized, state)
         loss = masked_action_mse(pred_actions, velocity, action_valid_mask, time_valid_mask)
         if return_fast_weights:
-            return loss, pred_actions, next_fast_weights
+            return loss, pred_actions, None if self.ttt_static_adapter else next_fast_weights
         return loss, pred_actions
 
     @torch.no_grad()
@@ -526,10 +531,11 @@ class FlowMatchingActionHead(nn.Module):
         # Slow-only ablation retains the trained TTT modules but always reads
         # their base MLP parameters; neither current nor past fast deltas enter.
         slow_only = self.ttt_enabled and getattr(self, "ttt_inference_slow_only", False)
-        next_fast_weights = None if slow_only else prev_fast_weights
+        stateless = slow_only or self.ttt_static_adapter
+        next_fast_weights = None if stateless else prev_fast_weights
         fixed_observation_position = (
             self.ttt_enabled
-            and not slow_only
+            and not stateless
             and getattr(self, "ttt_fixed_observation_position", False)
             and ttt_inference_updates == 1
             and num_steps > 1
@@ -542,7 +548,7 @@ class FlowMatchingActionHead(nn.Module):
                 # The training-matched default writes memory on the first Euler
                 # evaluation only. Evaluation may opt into writing on more of
                 # the four denoising evaluations for an explicit ablation.
-                query_fast_weights = None if slow_only else next_fast_weights
+                query_fast_weights = None if stateless else next_fast_weights
                 if fixed_observation_position and t > 0:
                     query_fast_weights = self._read_memory_at_observation_position(
                         next_fast_weights, prev_fast_weights, batch_size, device
@@ -555,11 +561,11 @@ class FlowMatchingActionHead(nn.Module):
                     memory_tokens=memory_tokens,
                     prev_fast_weights=query_fast_weights,
                     return_fast_weights=True,
-                    update_fast_weights=(not slow_only and t < ttt_inference_updates),
+                    update_fast_weights=(not stateless and t < ttt_inference_updates),
                 )
                 # Read-only calls return a temporary state with the old query
                 # position. Never commit that position for the next observation.
-                if slow_only:
+                if stateless:
                     next_fast_weights = None
                 elif not fixed_observation_position or t == 0:
                     next_fast_weights = returned_fast_weights

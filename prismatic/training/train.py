@@ -171,6 +171,7 @@ def build_vla_from_base_vlm(
         fm_max_seq_len=cfg.vla.fm_max_seq_len,
         fm_state_dropout=cfg.vla.fm_state_dropout,
         ttt_enabled=cfg.vla.ttt_enabled,
+        ttt_static_adapter=cfg.vla.ttt_static_adapter,
         ttt_memory_source=cfg.vla.ttt_memory_source,
         ttt_architecture=cfg.vla.ttt_architecture,
         ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
@@ -307,8 +308,8 @@ class TrainConfig:
             raise ValueError("validation_percent must be in [0, 50).")
         if min(self.validation_sequences_per_suite, self.validation_interval, self.parameter_check_interval) < 1:
             raise ValueError("Validation limits/intervals and parameter_check_interval must be positive.")
-        if self.validation_percent and not self.vla.ttt_carry_between_segments:
-            raise ValueError("Validation requires segmented TTT action-only training.")
+        if self.validation_percent and not (self.vla.ttt_carry_between_segments or self.vla.ttt_static_adapter):
+            raise ValueError("Validation requires segmented TTT or a static visual adapter.")
 
         # [Validate] Assert on `expected_world_size`
         assert (
@@ -340,7 +341,7 @@ def train(cfg: TrainConfig) -> None:
                 "Submit once without a checkpoint, then resubmit with the same run_id."
             )
         overwatch.info("Resuming run `%s` from `%s`", cfg.run_id, cfg.initial_checkpoint)
-        if cfg.vla.ttt_carry_between_segments:
+        if cfg.vla.ttt_carry_between_segments or cfg.vla.ttt_static_adapter:
             previous_config_path = run_dir / "config.json"
             if not previous_config_path.is_file():
                 raise ValueError("Round-2 resume requires the original run config.json.")
@@ -354,7 +355,7 @@ def train(cfg: TrainConfig) -> None:
             resume_keys = (
                 "ttt_carry_between_segments", "ttt_require_full_context", "ttt_context_length",
                 "ttt_observation_stride",
-                "ttt_tbptt_step_size", "ttt_architecture", "ttt_memory_source",
+                "ttt_tbptt_step_size", "ttt_architecture", "ttt_memory_source", "ttt_static_adapter",
                 "global_batch_size", "per_device_batch_size", "max_steps", "learning_rate",
             )
             mismatched = [key for key in resume_keys if previous_vla.get(key) != getattr(cfg.vla, key)]
@@ -404,6 +405,7 @@ def train(cfg: TrainConfig) -> None:
             vjepa_checkpoint_path=cfg.vla.vjepa_checkpoint_path,
             levjepa_checkpoint_path=cfg.vla.levjepa_checkpoint_path,
             ttt_enabled=cfg.vla.ttt_enabled,
+            ttt_static_adapter=cfg.vla.ttt_static_adapter,
             ttt_memory_source=cfg.vla.ttt_memory_source,
             ttt_architecture=cfg.vla.ttt_architecture,
             ttt_num_register_tokens=cfg.vla.ttt_num_register_tokens,
@@ -566,6 +568,7 @@ def train(cfg: TrainConfig) -> None:
     train_strategy.ttt_segment_size = (
         cfg.vla.ttt_tbptt_step_size if cfg.vla.ttt_carry_between_segments else None
     )
+    train_strategy.static_visual_adapter = cfg.vla.ttt_static_adapter
     train_strategy.ttt_require_full_context = cfg.vla.ttt_require_full_context
     train_strategy.debug_memory_stats = cfg.debug_memory_stats
     train_strategy.debug_memory_stats_interval = cfg.debug_memory_stats_interval

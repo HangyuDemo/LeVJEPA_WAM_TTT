@@ -70,6 +70,11 @@ class VLAConfig(ChoiceRegistry):
     # RoboTTT-style action-token fast-weight memory.  Disabled by default so
     # the released single-frame JEPA-WAM checkpoint remains load-compatible.
     ttt_enabled: bool = False
+    # Matched-capacity, stateless current-V-JEPA adapter ablation.
+    ttt_static_adapter: bool = False
+    # Single-observation recipe switch for the same stateless adapter. This
+    # expands to legacy module fields so existing checkpoints remain loadable.
+    static_visual_adapter: bool = False
     # ``jepa`` preserves the explicit future-WAM K/V route; ``jepa_current``
     # writes current frozen V-JEPA tokens; ``action_tokens`` derives implicit
     # K/V from the DiT stream.
@@ -113,6 +118,21 @@ class VLAConfig(ChoiceRegistry):
     reduce_in_full_precision: bool = True
 
     def __post_init__(self) -> None:
+        if self.static_visual_adapter:
+            self.train_ttt_only = True
+            self.ttt_enabled = True
+            self.ttt_static_adapter = True
+            self.ttt_memory_source = "jepa_current"
+            self.ttt_architecture = "wrapper"
+            self.ttt_token_scope = "state_register_action"
+            self.ttt_action_kv_scope = "full_dit_tokens"
+            self.ttt_wrapper_register_tokens = True
+            self.ttt_num_register_tokens = 16
+            self.ttt_context_length = 1
+            self.ttt_observation_stride = 1
+            self.ttt_carry_between_segments = False
+            self.ttt_require_full_context = False
+            self.ttt_tbptt_step_size = None
         # draccus/YAML may materialize a list or null for this optional tuple.
         # Normalize it once so validation and model construction see one shape.
         self.ttt_layer_indices = tuple(self.ttt_layer_indices or ())
@@ -171,8 +191,12 @@ class VLAConfig(ChoiceRegistry):
             raise ValueError("ttt_token_scope must be 'legacy' or 'state_register_action'.")
         if self.ttt_action_kv_scope not in {"query_tokens", "full_dit_tokens"}:
             raise ValueError("ttt_action_kv_scope must be 'query_tokens' or 'full_dit_tokens'.")
-        if self.ttt_enabled and self.ttt_context_length < 2:
+        if self.ttt_enabled and not self.ttt_static_adapter and self.ttt_context_length < 2:
             raise ValueError("RoboTTT training requires ttt_context_length >= 2.")
+        if self.ttt_static_adapter and (
+            not self.ttt_enabled or self.ttt_architecture != "wrapper" or self.ttt_memory_source != "jepa_current"
+        ):
+            raise ValueError("ttt_static_adapter requires an enabled current-JEPA WE wrapper.")
         if self.ttt_num_register_tokens < 1:
             raise ValueError("ttt_num_register_tokens must be positive.")
         if self.ttt_tbptt_step_size is not None and self.ttt_tbptt_step_size < 1:
